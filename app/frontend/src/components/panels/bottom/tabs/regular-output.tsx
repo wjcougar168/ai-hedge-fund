@@ -65,18 +65,27 @@ function SummarySection({ outputData }: { outputData: any }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {Object.entries(outputData.decisions).map(([ticker, decision]: [string, any]) => (
-              <TableRow key={ticker}>
-                <TableCell className="font-medium">{ticker}</TableCell>
-                <TableCell>
-                  <span className={cn("font-medium", getActionColor(decision.action || ''))}>
-                    {decision.action?.toUpperCase() || 'UNKNOWN'}
-                  </span>
-                </TableCell>
-                <TableCell>{decision.quantity || 0}</TableCell>
-                <TableCell>{decision.confidence?.toFixed(1) || 0}%</TableCell>
-              </TableRow>
-            ))}
+            {Object.entries(outputData.decisions).map(([ticker, decision]: [string, any]) => {
+              const actionText = decision.action?.toUpperCase() || 'UNKNOWN';
+              const displayAction = decision.action === 'hold' && decision.quantity === 0 
+                ? 'NO ACTION' 
+                : actionText;
+              const displayQuantity = decision.action === 'hold' && decision.quantity === 0 
+                ? '—' 
+                : decision.quantity || 0;
+              return (
+                <TableRow key={ticker}>
+                  <TableCell className="font-medium">{ticker}</TableCell>
+                  <TableCell>
+                    <span className={cn("font-medium", getActionColor(decision.action || ''))}>
+                      {displayAction}
+                    </span>
+                  </TableCell>
+                  <TableCell>{displayQuantity}</TableCell>
+                  <TableCell>{decision.confidence?.toFixed(1) || 0}%</TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </CardContent>
@@ -124,6 +133,13 @@ function AnalysisResultsSection({ outputData }: { outputData: any }) {
           
           {tickers.map((ticker) => {
             const decision = outputData.decisions![ticker];
+            
+            const displayAction = decision.action === 'hold' && decision.quantity === 0 
+              ? 'NO ACTION' 
+              : decision.action?.toUpperCase() || 'UNKNOWN';
+            const displayQuantity = decision.action === 'hold' && decision.quantity === 0 
+              ? '—' 
+              : decision.quantity || 0;
             
             return (
               <TabsContent key={ticker} value={ticker} className="space-y-4">
@@ -181,13 +197,13 @@ function AnalysisResultsSection({ outputData }: { outputData: any }) {
                       <TableCell className="font-medium">Action</TableCell>
                       <TableCell>
                         <span className={cn("font-medium", getActionColor(decision.action || ''))}>
-                          {decision.action?.toUpperCase() || 'UNKNOWN'}
+                          {displayAction}
                         </span>
                       </TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell className="font-medium">Quantity</TableCell>
-                      <TableCell>{decision.quantity || 0}</TableCell>
+                      <TableCell>{displayQuantity}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell className="font-medium">Confidence</TableCell>

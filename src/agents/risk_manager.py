@@ -46,18 +46,27 @@ def risk_management_agent(state: AgentState, agent_id: str = "risk_management_ag
 
         prices_df = prices_to_df(prices)
         
-        if not prices_df.empty and len(prices_df) > 1:
+        if not prices_df.empty and len(prices_df) >= 1:
             current_price = prices_df["close"].iloc[-1]
             current_prices[ticker] = current_price
             
-            # Calculate volatility metrics
-            volatility_metrics = calculate_volatility_metrics(prices_df)
-            volatility_data[ticker] = volatility_metrics
+            if len(prices_df) > 1:
+                # Calculate volatility metrics
+                volatility_metrics = calculate_volatility_metrics(prices_df)
+                volatility_data[ticker] = volatility_metrics
 
-            # Store returns for correlation analysis (use close-to-close returns)
-            daily_returns = prices_df["close"].pct_change().dropna()
-            if len(daily_returns) > 0:
-                returns_by_ticker[ticker] = daily_returns
+                # Store returns for correlation analysis (use close-to-close returns)
+                daily_returns = prices_df["close"].pct_change().dropna()
+                if len(daily_returns) > 0:
+                    returns_by_ticker[ticker] = daily_returns
+            else:
+                # Use default volatility if only one data point
+                volatility_data[ticker] = {
+                    "daily_volatility": 0.05,
+                    "annualized_volatility": 0.05 * np.sqrt(252),
+                    "volatility_percentile": 100,
+                    "data_points": 1
+                }
             
             progress.update_status(
                 agent_id, 

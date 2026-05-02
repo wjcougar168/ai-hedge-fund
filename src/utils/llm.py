@@ -1,10 +1,17 @@
 """Helper functions for LLM"""
 
 import json
+import os
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
 from src.graph.state import AgentState
+
+
+def is_ark_endpoint() -> bool:
+    """Check if the OpenAI API base URL points to Volcengine Ark."""
+    base_url = os.getenv("OPENAI_API_BASE", "")
+    return "ark" in base_url.lower() or "volc" in base_url.lower()
 
 
 def call_llm(
@@ -30,49 +37,77 @@ def call_llm(
         An instance of the specified Pydantic model
     """
     
-    # Extract model configuration if state is provided and agent_name is available
-    if state and agent_name:
-        model_name, model_provider = get_agent_model_config(state, agent_name)
-    else:
-        # Use system defaults when no state or agent_name is provided
-        model_name = "gpt-4.1"
-        model_provider = "OPENAI"
-
-    # Extract API keys from state if available
-    api_keys = None
-    if state:
-        request = state.get("metadata", {}).get("request")
-        if request and hasattr(request, 'api_keys'):
-            api_keys = request.api_keys
-
-    model_info = get_model_info(model_name, model_provider)
-    llm = get_model(model_name, model_provider, api_keys)
-
-    # For non-JSON support models, we can use structured output
-    if not (model_info and not model_info.has_json_mode()):
-        llm = llm.with_structured_output(
-            pydantic_model,
-            method="json_mode",
-        )
-
     # Call the LLM with retries
     for attempt in range(max_retries):
         try:
+            # Extract model configuration if state is provided and agent_name is available
+            if state and agent_name:
+                model_name, model_provider = get_agent_model_config(state, agent_name)
+            else:
+                # Use system defaults when no state or agent_name is provided
+                # Default to Volcengine Ark model (same as Hermes)
+                model_name = "ark-code-latest"
+                model_provider = "OpenAI"
+            
+            # For Volcengine Ark, override model name to always use a valid Ark model
+            # regardless of what was passed from frontend (gpt-4.1, etc.)
+            if is_ark_endpoint():
+                model_name = "ark-code-latest"
+                model_provider = "OpenAI"
+            
+            # Normalize model provider string to match enum
+            provider_map = {
+                "OPENAI": "OpenAI",
+                "GROQ": "Groq",
+                "ANTHROPIC": "Anthropic",
+                "DEEPSEEK": "DeepSeek",
+                "GOOGLE": "Google",
+                "OLLAMA": "Ollama",
+                "OPENROUTER": "OpenRouter",
+            }
+            model_provider = provider_map.get(model_provider.upper(), model_provider)
+            
+            # Extract API keys from state if available
+            api_keys = None
+            if state:
+                request = state.get("metadata", {}).get("request")
+                if request and hasattr(request, 'api_keys'):
+                    api_keys = request.api_keys
+            
+            model_info = get_model_info(model_name, model_provider)
+            llm = get_model(model_name, model_provider, api_keys)
+            
+            # For non-JSON support models, or Volcengine Ark which doesn't support structured output
+            if not (model_info and not model_info.has_json_mode()) and not is_ark_endpoint():
+                llm = llm.with_structured_output(
+                    pydantic_model,
+                    method="json_mode",
+                )
+            
             # Call the LLM
             result = llm.invoke(prompt)
-
-            # For non-JSON support models, we need to extract and parse the JSON manually
-            if model_info and not model_info.has_json_mode():
+            
+            # For non-JSON support models OR Volcengine Ark, we need to extract and parse the JSON manually
+            if (model_info and not model_info.has_json_mode()) or is_ark_endpoint():
                 parsed_result = extract_json_from_response(result.content)
                 if parsed_result:
+                    # Handle field name differences: Ark returns "confidence_score" instead of "confidence"
+                    if "confidence_score" in parsed_result and "confidence" not in parsed_result:
+                        parsed_result["confidence"] = parsed_result.pop("confidence_score")
                     return pydantic_model(**parsed_result)
-            else:
+            elif isinstance(result, pydantic_model):
                 return result
-
+            else:
+                # Result is a string but model_info said it supports JSON mode
+                parsed_result = extract_json_from_response(result)
+                if parsed_result:
+                    return pydantic_model(**parsed_result)
+                return result
+                
         except Exception as e:
             if agent_name:
                 progress.update_status(agent_name, None, f"Error - retry {attempt + 1}/{max_retries}")
-
+            
             if attempt == max_retries - 1:
                 print(f"Error in LLM call after {max_retries} attempts: {e}")
                 # Use default_factory if provided, otherwise create a basic default
@@ -156,7 +191,14 @@ def extract_json_from_response(content: str) -> dict | None:
 
     except Exception as e:
         print(f"Error extracting JSON from response: {e}")
-    return None
+    
+    # Normalize common field name variations
+    if result:
+        # Handle confidence_score -> confidence
+        if "confidence_score" in result and "confidence" not in result:
+            result["confidence"] = result.pop("confidence_score")
+    
+    return result
 
 
 def get_agent_model_config(state, agent_name):

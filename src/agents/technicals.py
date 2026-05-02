@@ -67,6 +67,19 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
         # Convert prices to a DataFrame
         prices_df = prices_to_df(prices)
 
+        # Need at least 20 data points for meaningful technical analysis
+        # If we have too few points (e.g., only demo data), skip technical calculations
+        if len(prices_df) < 10:
+            progress.update_status(agent_id, ticker, "Skipping: Insufficient price data for technicals")
+            technical_analysis[ticker] = {
+                "signal": "hold",
+                "confidence": 50,
+                "reasoning": {
+                    "insufficient_data": "Not enough price data points available for technical analysis",
+                }
+            }
+            continue
+
         progress.update_status(agent_id, ticker, "Calculating trend signals")
         trend_signals = calculate_trend_signals(prices_df)
 
@@ -106,31 +119,31 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
         # Generate detailed analysis report for this ticker
         technical_analysis[ticker] = {
             "signal": combined_signal["signal"],
-            "confidence": round(combined_signal["confidence"] * 100),
+            "confidence": round((combined_signal["confidence"] or 0.5) * 100),
             "reasoning": {
                 "trend_following": {
                     "signal": trend_signals["signal"],
-                    "confidence": round(trend_signals["confidence"] * 100),
+                    "confidence": round((trend_signals["confidence"] or 0.5) * 100),
                     "metrics": normalize_pandas(trend_signals["metrics"]),
                 },
                 "mean_reversion": {
                     "signal": mean_reversion_signals["signal"],
-                    "confidence": round(mean_reversion_signals["confidence"] * 100),
+                    "confidence": round((mean_reversion_signals["confidence"] or 0.5) * 100),
                     "metrics": normalize_pandas(mean_reversion_signals["metrics"]),
                 },
                 "momentum": {
                     "signal": momentum_signals["signal"],
-                    "confidence": round(momentum_signals["confidence"] * 100),
+                    "confidence": round((momentum_signals["confidence"] or 0.5) * 100),
                     "metrics": normalize_pandas(momentum_signals["metrics"]),
                 },
                 "volatility": {
                     "signal": volatility_signals["signal"],
-                    "confidence": round(volatility_signals["confidence"] * 100),
+                    "confidence": round((volatility_signals["confidence"] or 0.5) * 100),
                     "metrics": normalize_pandas(volatility_signals["metrics"]),
                 },
                 "statistical_arbitrage": {
                     "signal": stat_arb_signals["signal"],
-                    "confidence": round(stat_arb_signals["confidence"] * 100),
+                    "confidence": round((stat_arb_signals["confidence"] or 0.5) * 100),
                     "metrics": normalize_pandas(stat_arb_signals["metrics"]),
                 },
             },

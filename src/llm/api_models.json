@@ -10,6 +10,11 @@
     "provider": "OpenAI"
   },
   {
+    "display_name": "Ark Code Latest",
+    "model_name": "ark-code-latest",
+    "provider": "OpenAI"
+  },
+  {
     "display_name": "GPT-4.1",
     "model_name": "gpt-4.1",
     "provider": "OpenAI"

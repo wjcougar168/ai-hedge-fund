@@ -139,6 +139,12 @@ export function InvestmentReportDialog({
                     {tickers.map(ticker => {
                       const decision = outputNodeData.decisions[ticker];
                       const currentPrice = outputNodeData.current_prices?.[ticker] || 'N/A';
+                      
+                      // Format quantity display - show empty for 0 hold
+                      const displayQuantity = decision.action === 'hold' && decision.quantity === 0 
+                        ? '—' 
+                        : decision.quantity;
+                      
                       return (
                         <TableRow key={ticker}>
                           <TableCell className="font-medium">{ticker}</TableCell>
@@ -146,10 +152,12 @@ export function InvestmentReportDialog({
                           <TableCell>
                             <div className="flex items-center gap-2">
                               {getActionIcon(decision.action as ActionType)}
-                              <span className="capitalize">{decision.action}</span>
+                              <span className="capitalize">
+                                {decision.action === 'hold' && decision.quantity === 0 ? 'No Action' : decision.action}
+                              </span>
                             </div>
                           </TableCell>
-                          <TableCell>{decision.quantity}</TableCell>
+                          <TableCell>{displayQuantity}</TableCell>
                           <TableCell>{getConfidenceBadge(decision.confidence)}</TableCell>
                         </TableRow>
                       );
@@ -171,7 +179,9 @@ export function InvestmentReportDialog({
                       <div className="flex items-center gap-1">
                         {getActionIcon(outputNodeData.decisions[ticker].action as ActionType)}
                         <span className="text-sm font-normal text-muted-foreground">
-                          {outputNodeData.decisions[ticker].action} {outputNodeData.decisions[ticker].quantity} shares
+                          {outputNodeData.decisions[ticker].action === 'hold' && outputNodeData.decisions[ticker].quantity === 0 
+                            ? 'No action' 
+                            : `${outputNodeData.decisions[ticker].action} ${outputNodeData.decisions[ticker].quantity} shares`}
                         </span>
                       </div>
                     </div>

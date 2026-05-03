@@ -181,7 +181,8 @@ def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
     raw_score = 0  # up to 9 raw points => scale to 0–10
 
     # 1. Revenue Growth (annualized CAGR)
-    revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
+    revenues = [getattr(fi, 'revenue', None) for fi in financial_line_items]
+    revenues = [v for v in revenues if v is not None and v != 0]
     if len(revenues) >= 2:
         # Calculate annualized growth rate (CAGR) for proper comparison
         latest_rev = revenues[0]
@@ -207,7 +208,8 @@ def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
         details.append("Not enough revenue data points for growth calculation.")
 
     # 2. EPS Growth (annualized CAGR)
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+    eps_values = [getattr(fi, 'earnings_per_share', None) for fi in financial_line_items]
+    eps_values = [v for v in eps_values if v is not None and v != 0]
     if len(eps_values) >= 2:
         latest_eps = eps_values[0]
         oldest_eps = eps_values[-1]
@@ -232,7 +234,8 @@ def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
         details.append("Not enough EPS data points for growth calculation.")
 
     # 3. R&D as % of Revenue (if we have R&D data)
-    rnd_values = [fi.research_and_development for fi in financial_line_items if fi.research_and_development is not None]
+    rnd_values = [getattr(fi, 'research_and_development', None) for fi in financial_line_items]
+    rnd_values = [v for v in rnd_values if v is not None and v != 0]
     if rnd_values and revenues and len(rnd_values) == len(revenues):
         # We'll just look at the most recent for a simple measure
         recent_rnd = rnd_values[0]
@@ -273,7 +276,8 @@ def analyze_margins_stability(financial_line_items: list) -> dict:
     raw_score = 0  # up to 6 => scale to 0-10
 
     # 1. Operating Margin Consistency
-    op_margins = [fi.operating_margin for fi in financial_line_items if fi.operating_margin is not None]
+    op_margins = [getattr(fi, 'operating_margin', None) for fi in financial_line_items]
+    op_margins = [v for v in op_margins if v is not None and v != 0]
     if len(op_margins) >= 2:
         # Check if margins are stable or improving (comparing oldest to newest)
         oldest_op_margin = op_margins[-1]
@@ -290,7 +294,8 @@ def analyze_margins_stability(financial_line_items: list) -> dict:
         details.append("Not enough operating margin data points")
 
     # 2. Gross Margin Level
-    gm_values = [fi.gross_margin for fi in financial_line_items if fi.gross_margin is not None]
+    gm_values = [getattr(fi, 'gross_margin', None) for fi in financial_line_items]
+    gm_values = [v for v in gm_values if v is not None and v != 0]
     if gm_values:
         # We'll just take the most recent
         recent_gm = gm_values[0]
@@ -342,8 +347,10 @@ def analyze_management_efficiency_leverage(financial_line_items: list) -> dict:
     raw_score = 0  # up to 6 => scale to 0–10
 
     # 1. Return on Equity (ROE)
-    ni_values = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
-    eq_values = [fi.shareholders_equity for fi in financial_line_items if fi.shareholders_equity is not None]
+    ni_values = [getattr(fi, 'net_income', None) for fi in financial_line_items]
+    ni_values = [v for v in ni_values if v is not None and v != 0]
+    eq_values = [getattr(fi, 'shareholders_equity', None) for fi in financial_line_items]
+    eq_values = [v for v in eq_values if v is not None and v != 0]
     if ni_values and eq_values and len(ni_values) == len(eq_values):
         recent_ni = ni_values[0]
         recent_eq = eq_values[0] if eq_values[0] else 1e-9
@@ -366,7 +373,8 @@ def analyze_management_efficiency_leverage(financial_line_items: list) -> dict:
         details.append("Insufficient data for ROE calculation")
 
     # 2. Debt-to-Equity
-    debt_values = [fi.total_debt for fi in financial_line_items if fi.total_debt is not None]
+    debt_values = [getattr(fi, 'total_debt', None) for fi in financial_line_items]
+    debt_values = [v for v in debt_values if v is not None and v != 0]
     if debt_values and eq_values and len(debt_values) == len(eq_values):
         recent_debt = debt_values[0]
         recent_equity = eq_values[0] if eq_values[0] else 1e-9
@@ -383,7 +391,8 @@ def analyze_management_efficiency_leverage(financial_line_items: list) -> dict:
         details.append("Insufficient data for debt/equity analysis")
 
     # 3. FCF Consistency
-    fcf_values = [fi.free_cash_flow for fi in financial_line_items if fi.free_cash_flow is not None]
+    fcf_values = [getattr(fi, 'free_cash_flow', None) for fi in financial_line_items]
+    fcf_values = [v for v in fcf_values if v is not None and v != 0]
     if fcf_values and len(fcf_values) >= 2:
         # Check if FCF is positive in recent years
         positive_fcf_count = sum(1 for x in fcf_values if x and x > 0)
@@ -416,8 +425,10 @@ def analyze_fisher_valuation(financial_line_items: list, market_cap: float | Non
     raw_score = 0
 
     # Gather needed data
-    net_incomes = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
-    fcf_values = [fi.free_cash_flow for fi in financial_line_items if fi.free_cash_flow is not None]
+    net_incomes = [getattr(fi, 'net_income', None) for fi in financial_line_items]
+    net_incomes = [v for v in net_incomes if v is not None and v != 0]
+    fcf_values = [getattr(fi, 'free_cash_flow', None) for fi in financial_line_items]
+    fcf_values = [v for v in fcf_values if v is not None and v != 0]
 
     # 1) P/E
     recent_net_income = net_incomes[0] if net_incomes else None

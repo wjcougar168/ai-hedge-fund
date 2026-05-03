@@ -6,6 +6,27 @@ from pathlib import Path
 class Cache:
     """Persistent disk cache for API responses with in-memory fallback."""
     
+    @staticmethod
+    def _normalize_ticker(ticker: str) -> str:
+        """Normalize ticker for consistent cache keys.
+        Converts dot format to hyphen format (BRK.B -> BRK-B) so that
+        different ticker formats from different APIs map to the same cache entry.
+        """
+        upper = ticker.upper()
+        # Common multi-class stock tickers
+        dot_to_hyphen = {
+            'BRK.B': 'BRK-B', 'BRK.A': 'BRK-A',
+            'BF.B': 'BF-B', 'BF.A': 'BF-A',
+            'MOG.A': 'MOG-A', 'MOG.B': 'MOG-B',
+            'HEI.A': 'HEI-A', 'CWEN.A': 'CWEN-A',
+        }
+        if upper in dot_to_hyphen:
+            return dot_to_hyphen[upper]
+        # General fallback: any ticker with .A or .B suffix
+        if upper.endswith('.A') or upper.endswith('.B'):
+            return upper.replace('.', '-')
+        return upper
+    
     def __init__(self, cache_dir: str = None):
         # Set up cache directory - default to ~/.cache/ai-hedge-fund
         if cache_dir is None:
@@ -143,78 +164,83 @@ class Cache:
 
     def get_prices(self, ticker: str, start_date: str = None, end_date: str = None) -> list[dict[str, any]] | None:
         """Get cached price data, optionally filtered by date range."""
-        cached = self._prices_cache.get(ticker.upper())
+        key = self._normalize_ticker(ticker)
+        cached = self._prices_cache.get(key)
         if cached and start_date and end_date:
             return self._filter_by_date_range(cached, start_date, end_date, "time")
         return cached
     
     def has_sufficient_prices(self, ticker: str, start_date: str, end_date: str) -> bool:
         """Check if we have enough cached price data AND cache is fresh."""
+        key = self._normalize_ticker(ticker)
         # Check if cache is fresh enough (24 hours)
-        if not self._is_cache_fresh(ticker, "prices", self.prices_ttl_hours):
+        if not self._is_cache_fresh(key, "prices", self.prices_ttl_hours):
             return False
         
-        cached = self._prices_cache.get(ticker.upper())
+        cached = self._prices_cache.get(key)
         return self._has_sufficient_data(cached, start_date, end_date, "time")
 
     def set_prices(self, ticker: str, data: list[dict[str, any]]):
         """Append new price data to cache (both in-memory and disk)."""
-        ticker_upper = ticker.upper()
-        merged = self._merge_data(self._prices_cache.get(ticker_upper), data, key_field="time")
-        self._prices_cache[ticker_upper] = merged
-        self._save_to_disk("prices", ticker_upper, merged)
+        key = self._normalize_ticker(ticker)
+        merged = self._merge_data(self._prices_cache.get(key), data, key_field="time")
+        self._prices_cache[key] = merged
+        self._save_to_disk("prices", key, merged)
 
     def get_financial_metrics(self, ticker: str) -> list[dict[str, any]]:
         """Get cached financial metrics if available."""
-        return self._financial_metrics_cache.get(ticker.upper())
+        return self._financial_metrics_cache.get(self._normalize_ticker(ticker))
     
     def has_sufficient_financial_metrics(self, ticker: str) -> bool:
         """Check if we have cached financial metrics AND cache is fresh."""
+        key = self._normalize_ticker(ticker)
         # Check if cache is fresh enough (7 days)
-        if not self._is_cache_fresh(ticker, "financial_metrics", self.financials_ttl_days * 24):
+        if not self._is_cache_fresh(key, "financial_metrics", self.financials_ttl_days * 24):
             return False
         
-        cached = self._financial_metrics_cache.get(ticker.upper())
+        cached = self._financial_metrics_cache.get(key)
         return cached is not None and len(cached) > 0
 
     def set_financial_metrics(self, ticker: str, data: list[dict[str, any]]):
         """Append new financial metrics to cache (both in-memory and disk)."""
-        ticker_upper = ticker.upper()
-        merged = self._merge_data(self._financial_metrics_cache.get(ticker_upper), data, key_field="report_period")
-        self._financial_metrics_cache[ticker_upper] = merged
-        self._save_to_disk("financial_metrics", ticker_upper, merged)
+        key = self._normalize_ticker(ticker)
+        merged = self._merge_data(self._financial_metrics_cache.get(key), data, key_field="report_period")
+        self._financial_metrics_cache[key] = merged
+        self._save_to_disk("financial_metrics", key, merged)
 
     def get_line_items(self, ticker: str) -> list[dict[str, any]] | None:
         """Get cached line items if available."""
-        return self._line_items_cache.get(ticker.upper())
+        return self._line_items_cache.get(self._normalize_ticker(ticker))
     
     def has_sufficient_line_items(self, ticker: str) -> bool:
         """Check if we have cached line items AND cache is fresh."""
+        key = self._normalize_ticker(ticker)
         # Check if cache is fresh enough (7 days)
-        if not self._is_cache_fresh(ticker, "line_items", self.financials_ttl_days * 24):
+        if not self._is_cache_fresh(key, "line_items", self.financials_ttl_days * 24):
             return False
         
-        cached = self._line_items_cache.get(ticker.upper())
+        cached = self._line_items_cache.get(key)
         return cached is not None and len(cached) > 0
 
     def set_line_items(self, ticker: str, data: list[dict[str, any]]):
         """Append new line items to cache (both in-memory and disk)."""
-        ticker_upper = ticker.upper()
-        merged = self._merge_data(self._line_items_cache.get(ticker_upper), data, key_field="report_period")
-        self._line_items_cache[ticker_upper] = merged
-        self._save_to_disk("line_items", ticker_upper, merged)
+        key = self._normalize_ticker(ticker)
+        merged = self._merge_data(self._line_items_cache.get(key), data, key_field="report_period")
+        self._line_items_cache[key] = merged
+        self._save_to_disk("line_items", key, merged)
 
     def get_insider_trades(self, ticker: str) -> list[dict[str, any]] | None:
         """Get cached insider trades if available."""
-        return self._insider_trades_cache.get(ticker.upper())
+        return self._insider_trades_cache.get(self._normalize_ticker(ticker))
     
     def has_sufficient_insider_trades(self, ticker: str, days: int = 90) -> bool:
         """Check if we have recent enough insider trades AND cache is fresh."""
+        key = self._normalize_ticker(ticker)
         # First check if cache is fresh enough
-        if not self._is_cache_fresh(ticker, "insider_trades", self.insider_ttl_hours):
+        if not self._is_cache_fresh(key, "insider_trades", self.insider_ttl_hours):
             return False
         
-        cached = self._insider_trades_cache.get(ticker.upper())
+        cached = self._insider_trades_cache.get(key)
         if not cached or len(cached) == 0:
             return False
         
@@ -237,14 +263,15 @@ class Cache:
 
     def set_insider_trades(self, ticker: str, data: list[dict[str, any]]):
         """Append new insider trades to cache (both in-memory and disk)."""
-        ticker_upper = ticker.upper()
-        merged = self._merge_data(self._insider_trades_cache.get(ticker_upper), data, key_field="filing_date")
-        self._insider_trades_cache[ticker_upper] = merged
-        self._save_to_disk("insider_trades", ticker_upper, merged)
+        key = self._normalize_ticker(ticker)
+        merged = self._merge_data(self._insider_trades_cache.get(key), data, key_field="filing_date")
+        self._insider_trades_cache[key] = merged
+        self._save_to_disk("insider_trades", key, merged)
 
     def get_company_news(self, ticker: str, start_date: str = None, end_date: str = None) -> list[dict[str, any]] | None:
         """Get cached company news, optionally filtered by date range."""
-        cached = self._company_news_cache.get(ticker.upper())
+        key = self._normalize_ticker(ticker)
+        cached = self._company_news_cache.get(key)
         if cached and start_date and end_date:
             return self._filter_by_date_range(cached, start_date, end_date, "date")
         return cached
@@ -263,33 +290,34 @@ class Cache:
 
     def has_sufficient_company_news(self, ticker: str, start_date: str, end_date: str, min_count: int = 5) -> bool:
         """Check if we have enough cached news for the date range AND it's fresh."""
+        key = self._normalize_ticker(ticker)
         # First check if cache is fresh enough
-        if not self._is_cache_fresh(ticker, "company_news", self.news_ttl_hours):
+        if not self._is_cache_fresh(key, "company_news", self.news_ttl_hours):
             return False
-        cached = self.get_company_news(ticker, start_date, end_date)
+        cached = self.get_company_news(key, start_date, end_date)
         return cached is not None and len(cached) >= min_count
 
     def set_company_news(self, ticker: str, data: list[dict[str, any]]):
         """Append new company news to cache (both in-memory and disk)."""
-        ticker_upper = ticker.upper()
-        merged = self._merge_data(self._company_news_cache.get(ticker_upper), data, key_field="date")
-        self._company_news_cache[ticker_upper] = merged
-        self._save_to_disk("company_news", ticker_upper, merged)
+        key = self._normalize_ticker(ticker)
+        merged = self._merge_data(self._company_news_cache.get(key), data, key_field="date")
+        self._company_news_cache[key] = merged
+        self._save_to_disk("company_news", key, merged)
 
     def get_market_cap(self, ticker: str) -> float | None:
         """Get cached market cap value - returns None if cache is stale (over 24 hours)."""
-        ticker_upper = ticker.upper()
+        key = self._normalize_ticker(ticker)
         # Check if cache is fresh enough (24 hours)
-        if not self._is_cache_fresh(ticker, "market_cap", self.market_cap_ttl_hours):
+        if not self._is_cache_fresh(key, "market_cap", self.market_cap_ttl_hours):
             return None
-        return self._market_cap_cache.get(ticker_upper)
+        return self._market_cap_cache.get(key)
 
     def set_market_cap(self, ticker: str, value: float):
         """Set cached market cap value (persisted permanently)."""
-        ticker_upper = ticker.upper()
-        self._market_cap_cache[ticker_upper] = value
+        key = self._normalize_ticker(ticker)
+        self._market_cap_cache[key] = value
         # Save as dict for consistency with other cache files
-        self._save_to_disk("market_cap", ticker_upper, {"value": value})
+        self._save_to_disk("market_cap", key, {"value": value})
 
 
 # Global cache instance

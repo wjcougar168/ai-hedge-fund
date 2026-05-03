@@ -172,13 +172,15 @@ def analyze_profitability(financial_line_items: list) -> dict[str, any]:
     reasoning = []
 
     # Calculate ROE (Return on Equity) - Jhunjhunwala's key metric
-    if (getattr(latest, 'net_income', None) and latest.net_income > 0 and
-        getattr(latest, 'total_assets', None) and getattr(latest, 'total_liabilities', None) and 
-        latest.total_assets and latest.total_liabilities):
+    latest_net_income = getattr(latest, 'net_income', None)
+    latest_total_assets = getattr(latest, 'total_assets', None)
+    latest_total_liabilities = getattr(latest, 'total_liabilities', None)
+    if (latest_net_income and latest_net_income > 0 and
+        latest_total_assets and latest_total_liabilities):
         
-        shareholders_equity = latest.total_assets - latest.total_liabilities
+        shareholders_equity = latest_total_assets - latest_total_liabilities
         if shareholders_equity > 0:
-            roe = (latest.net_income / shareholders_equity) * 100
+            roe = (latest_net_income / shareholders_equity) * 100
             if roe > 20:  # Excellent ROE
                 score += 3
                 reasoning.append(f"Excellent ROE: {roe:.1f}%")
@@ -196,9 +198,10 @@ def analyze_profitability(financial_line_items: list) -> dict[str, any]:
         reasoning.append("Unable to calculate ROE - missing data")
 
     # Operating Margin Analysis
-    if (getattr(latest, "operating_income", None) and latest.operating_income and 
-        getattr(latest, "revenue", None) and latest.revenue and latest.revenue > 0):
-        operating_margin = (latest.operating_income / latest.revenue) * 100
+    latest_operating_income = getattr(latest, 'operating_income', None)
+    latest_revenue = getattr(latest, 'revenue', None)
+    if (latest_operating_income and latest_revenue and latest_revenue > 0):
+        operating_margin = (latest_operating_income / latest_revenue) * 100
         if operating_margin > 20:  # Excellent margin
             score += 2
             reasoning.append(f"Excellent operating margin: {operating_margin:.1f}%")
@@ -337,10 +340,11 @@ def analyze_balance_sheet(financial_line_items: list) -> dict[str, any]:
     reasoning = []
 
     # Debt to asset ratio
-    if (getattr(latest, "total_assets", None) and getattr(latest, "total_liabilities", None) 
-        and latest.total_assets and latest.total_liabilities 
-        and latest.total_assets > 0):
-        debt_ratio = latest.total_liabilities / latest.total_assets
+    latest_total_assets = getattr(latest, 'total_assets', None)
+    latest_total_liabilities = getattr(latest, 'total_liabilities', None)
+    if (latest_total_assets and latest_total_liabilities 
+        and latest_total_assets > 0):
+        debt_ratio = latest_total_liabilities / latest_total_assets
         if debt_ratio < 0.5:
             score += 2
             reasoning.append(f"Low debt ratio: {debt_ratio:.2f}")
@@ -353,10 +357,11 @@ def analyze_balance_sheet(financial_line_items: list) -> dict[str, any]:
         reasoning.append("Insufficient data to calculate debt ratio")
 
     # Current ratio (liquidity)
-    if (getattr(latest, "current_assets", None) and getattr(latest, "current_liabilities", None) 
-        and latest.current_assets and latest.current_liabilities 
-        and latest.current_liabilities > 0):
-        current_ratio = latest.current_assets / latest.current_liabilities
+    latest_current_assets = getattr(latest, 'current_assets', None)
+    latest_current_liabilities = getattr(latest, 'current_liabilities', None)
+    if (latest_current_assets and latest_current_liabilities 
+        and latest_current_liabilities > 0):
+        current_ratio = latest_current_assets / latest_current_liabilities
         if current_ratio > 2.0:
             score += 2
             reasoning.append(f"Excellent liquidity with current ratio: {current_ratio:.2f}")
@@ -384,18 +389,20 @@ def analyze_cash_flow(financial_line_items: list) -> dict[str, any]:
     reasoning = []
 
     # Free cash flow analysis
-    if getattr(latest, "free_cash_flow", None) and latest.free_cash_flow:
-        if latest.free_cash_flow > 0:
+    latest_fcf = getattr(latest, 'free_cash_flow', None)
+    if latest_fcf:
+        if latest_fcf > 0:
             score += 2
-            reasoning.append(f"Positive free cash flow: {latest.free_cash_flow}")
+            reasoning.append(f"Positive free cash flow: {latest_fcf}")
         else:
-            reasoning.append(f"Negative free cash flow: {latest.free_cash_flow}")
+            reasoning.append(f"Negative free cash flow: {latest_fcf}")
     else:
         reasoning.append("Free cash flow data not available")
 
     # Dividend analysis
-    if getattr(latest, "dividends_and_other_cash_distributions", None) and latest.dividends_and_other_cash_distributions:
-        if latest.dividends_and_other_cash_distributions < 0:  # Negative indicates cash outflow for dividends
+    latest_dividends = getattr(latest, 'dividends_and_other_cash_distributions', None)
+    if latest_dividends:
+        if latest_dividends < 0:  # Negative indicates cash outflow for dividends
             score += 1
             reasoning.append("Company pays dividends to shareholders")
         else:
@@ -446,12 +453,14 @@ def assess_quality_metrics(financial_line_items: list) -> float:
     quality_factors = []
     
     # ROE consistency and level
-    if (getattr(latest, 'net_income', None) and getattr(latest, 'total_assets', None) and 
-        getattr(latest, 'total_liabilities', None) and latest.total_assets and latest.total_liabilities):
+    q_net_income = getattr(latest, 'net_income', None)
+    q_total_assets = getattr(latest, 'total_assets', None)
+    q_total_liabilities = getattr(latest, 'total_liabilities', None)
+    if (q_net_income and q_total_assets and q_total_liabilities):
         
-        shareholders_equity = latest.total_assets - latest.total_liabilities
-        if shareholders_equity > 0 and latest.net_income:
-            roe = latest.net_income / shareholders_equity
+        shareholders_equity = q_total_assets - q_total_liabilities
+        if shareholders_equity > 0 and q_net_income:
+            roe = q_net_income / shareholders_equity
             if roe > 0.20:  # ROE > 20%
                 quality_factors.append(1.0)
             elif roe > 0.15:  # ROE > 15%
@@ -466,9 +475,10 @@ def assess_quality_metrics(financial_line_items: list) -> float:
         quality_factors.append(0.5)
     
     # Debt levels (lower is better)
-    if (getattr(latest, 'total_assets', None) and getattr(latest, 'total_liabilities', None) and 
-        latest.total_assets and latest.total_liabilities):
-        debt_ratio = latest.total_liabilities / latest.total_assets
+    d_total_assets = getattr(latest, 'total_assets', None)
+    d_total_liabilities = getattr(latest, 'total_liabilities', None)
+    if (d_total_assets and d_total_liabilities):
+        debt_ratio = d_total_liabilities / d_total_assets
         if debt_ratio < 0.3:  # Low debt
             quality_factors.append(1.0)
         elif debt_ratio < 0.5:  # Moderate debt
@@ -509,16 +519,17 @@ def calculate_intrinsic_value(financial_line_items: list, market_cap: float) -> 
         latest = financial_line_items[0]
         
         # Need positive earnings as base
-        if not getattr(latest, 'net_income', None) or latest.net_income <= 0:
+        latest_net_income = getattr(latest, 'net_income', None)
+        if not latest_net_income or latest_net_income <= 0:
             return None
         
         # Get historical earnings for growth calculation
-        net_incomes = [getattr(item, "net_income", None) for item in financial_line_items[:5] 
-                       if getattr(item, "net_income", None) is not None and getattr(item, "net_income", None) > 0]
+        net_incomes = [getattr(item, "net_income", None) for item in financial_line_items[:5]]
+        net_incomes = [v for v in net_incomes if v is not None and v > 0]
         
         if len(net_incomes) < 2:
             # Use current earnings with conservative multiple for stable companies
-            return latest.net_income * 12  # Conservative P/E of 12
+            return latest_net_income * 12  # Conservative P/E of 12
         
         # Calculate sustainable growth rate using historical data
         initial_income = net_incomes[-1]  # Oldest
@@ -556,7 +567,7 @@ def calculate_intrinsic_value(financial_line_items: list, market_cap: float) -> 
             terminal_multiple = 12
         
         # Simple DCF with terminal value
-        current_earnings = latest.net_income
+        current_earnings = latest_net_income
         terminal_value = 0
         dcf_value = 0
         
@@ -576,8 +587,9 @@ def calculate_intrinsic_value(financial_line_items: list, market_cap: float) -> 
         
     except Exception:
         # Fallback to simple earnings multiple
-        if getattr(latest, 'net_income', None) and latest.net_income > 0:
-            return latest.net_income * 15
+        fallback_ni = getattr(latest, 'net_income', None)
+        if fallback_ni and fallback_ni > 0:
+            return fallback_ni * 15
         return None
 
 

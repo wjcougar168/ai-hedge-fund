@@ -81,7 +81,7 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
         signals.append("bullish" if growth_score >= 2 else "bearish" if growth_score == 0 else "neutral")
         reasoning["growth_signal"] = {
             "signal": signals[1],
-            "details": (f"Revenue Growth: {revenue_growth:.2%}" if revenue_growth else "Revenue Growth: N/A") + ", " + (f"Earnings Growth: {earnings_growth:.2%}" if earnings_growth else "Earnings Growth: N/A"),
+            "details": (f"Revenue Growth: {revenue_growth:.2%}" if revenue_growth is not None else "Revenue Growth: N/A") + ", " + (f"Earnings Growth: {earnings_growth:.2%}" if earnings_growth is not None else "Earnings Growth: N/A"),
         }
 
         progress.update_status(agent_id, ticker, "Analyzing financial health")

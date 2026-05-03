@@ -80,16 +80,18 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         # Valuation models
         # ------------------------------------------------------------------
         # Handle potential None values for working capital
-        if li_curr.working_capital is not None and li_prev.working_capital is not None:
-            wc_change = li_curr.working_capital - li_prev.working_capital
+        wc_curr = getattr(li_curr, 'working_capital', None)
+        wc_prev = getattr(li_prev, 'working_capital', None)
+        if wc_curr is not None and wc_prev is not None:
+            wc_change = wc_curr - wc_prev
         else:
             wc_change = 0  # Default to 0 if working capital data is unavailable
 
         # Owner Earnings
         owner_val = calculate_owner_earnings_value(
-            net_income=li_curr.net_income,
-            depreciation=li_curr.depreciation_and_amortization,
-            capex=li_curr.capital_expenditure,
+            net_income=getattr(li_curr, 'net_income', None),
+            depreciation=getattr(li_curr, 'depreciation_and_amortization', None),
+            capex=getattr(li_curr, 'capital_expenditure', None),
             working_capital_change=wc_change,
             growth_rate=most_recent_metrics.earnings_growth or 0.05,
         )
@@ -109,8 +111,9 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         # Prepare FCF history for enhanced DCF
         fcf_history = []
         for li in line_items:
-            if hasattr(li, 'free_cash_flow') and li.free_cash_flow is not None:
-                fcf_history.append(li.free_cash_flow)
+            val = getattr(li, 'free_cash_flow', None)
+            if val is not None:
+                fcf_history.append(val)
         
         # Enhanced DCF with scenarios
         dcf_results = calculate_dcf_scenarios(
@@ -133,7 +136,7 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         # Residual Income Model
         rim_val = calculate_residual_income_value(
             market_cap=most_recent_metrics.market_cap,
-            net_income=li_curr.net_income,
+            net_income=getattr(li_curr, 'net_income', None),
             price_to_book_ratio=most_recent_metrics.price_to_book_ratio,
             book_value_growth=most_recent_metrics.book_value_growth or 0.03,
         )

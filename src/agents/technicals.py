@@ -31,6 +31,26 @@ def safe_float(value, default=0.0):
         return default
 
 
+def clamp_hurst(value, min_val=0.0, max_val=1.0):
+    """
+    Clamp Hurst exponent to valid range [0, 1] and handle floating point precision issues.
+    Extremely small values (near 0) due to floating point errors are clamped to 0.
+    
+    Args:
+        value: Hurst exponent value from calculation
+        min_val: Minimum valid value (default 0.0)
+        max_val: Maximum valid value (default 1.0)
+    
+    Returns:
+        float: Hurst exponent within valid range
+    """
+    val = safe_float(value, 0.5)
+    # Handle floating point precision issues (very small negative numbers like -5e-15)
+    if abs(val) < 1e-9:
+        return 0.0
+    return max(min_val, min(max_val, val))
+
+
 ##### Technical Analyst #####
 def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analyst_agent"):
     """
@@ -375,7 +395,7 @@ def calculate_stat_arb_signals(prices_df):
         "signal": signal,
         "confidence": confidence,
         "metrics": {
-            "hurst_exponent": safe_float(hurst),
+            "hurst_exponent": clamp_hurst(hurst),
             "skewness": safe_float(skew.iloc[-1]),
             "kurtosis": safe_float(kurt.iloc[-1]),
         },
@@ -538,7 +558,11 @@ def calculate_hurst_exponent(price_series: pd.Series, max_lag: int = 20) -> floa
     # Return the Hurst exponent from linear fit
     try:
         reg = np.polyfit(np.log(lags), np.log(tau), 1)
-        return reg[0]  # Hurst exponent is the slope
+        hurst = reg[0]  # Hurst exponent is the slope
+        # Clamp to valid range [0, 1] and handle floating point precision issues
+        if abs(hurst) < 1e-9:
+            return 0.0
+        return max(0.0, min(1.0, hurst))
     except (ValueError, RuntimeWarning):
         # Return 0.5 (random walk) if calculation fails
         return 0.5

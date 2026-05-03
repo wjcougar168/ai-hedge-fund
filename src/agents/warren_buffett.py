@@ -211,7 +211,7 @@ def analyze_consistency(financial_line_items: list) -> dict[str, any]:
     reasoning = []
 
     # Check earnings growth trend
-    earnings_values = [item.net_income for item in financial_line_items if item.net_income]
+    earnings_values = [getattr(item, 'net_income', None) for item in financial_line_items if getattr(item, 'net_income', None)]
     if len(earnings_values) >= 4:
         # Simple check: is each period's earnings bigger than the next?
         earnings_growth = all(earnings_values[i] > earnings_values[i + 1] for i in range(len(earnings_values) - 1))
@@ -349,22 +349,21 @@ def analyze_management_quality(financial_line_items: list) -> dict[str, any]:
     mgmt_score = 0
 
     latest = financial_line_items[0]
-    if hasattr(latest,
-               "issuance_or_purchase_of_equity_shares") and latest.issuance_or_purchase_of_equity_shares and latest.issuance_or_purchase_of_equity_shares < 0:
+    issuance = getattr(latest, 'issuance_or_purchase_of_equity_shares', None)
+    if issuance and issuance < 0:
         # Negative means the company spent money on buybacks
         mgmt_score += 1
         reasoning.append("Company has been repurchasing shares (shareholder-friendly)")
 
-    if hasattr(latest,
-               "issuance_or_purchase_of_equity_shares") and latest.issuance_or_purchase_of_equity_shares and latest.issuance_or_purchase_of_equity_shares > 0:
+    if issuance and issuance > 0:
         # Positive issuance means new shares => possible dilution
         reasoning.append("Recent common stock issuance (potential dilution)")
     else:
         reasoning.append("No significant new stock issuance detected")
 
     # Check for any dividends
-    if hasattr(latest,
-               "dividends_and_other_cash_distributions") and latest.dividends_and_other_cash_distributions and latest.dividends_and_other_cash_distributions < 0:
+    dividends = getattr(latest, 'dividends_and_other_cash_distributions', None)
+    if dividends and dividends < 0:
         mgmt_score += 1
         reasoning.append("Company has a track record of paying dividends")
     else:
@@ -389,11 +388,18 @@ def calculate_owner_earnings(financial_line_items: list) -> dict[str, any]:
     latest = financial_line_items[0]
     details = []
 
-    # Core components
-    net_income = latest.net_income
-    depreciation = latest.depreciation_and_amortization
-    capex = latest.capital_expenditure
+    # Core components - use getattr for safety (LineItem dynamic fields may not exist)
+    net_income = getattr(latest, 'net_income', None)
+    depreciation = getattr(latest, 'depreciation_and_amortization', None)
+    capex = getattr(latest, 'capital_expenditure', None)
 
+    # If capex is not available, estimate maintenance capex as depreciation
+    # (Buffett noted maintenance capex ≈ depreciation for many businesses)
+    # This is especially relevant for financials/banks where capex data is unavailable
+    if net_income is not None and depreciation is not None and capex is None:
+        capex = depreciation  # Conservative estimate: maintenance capex = depreciation
+        details.append("Note: Capital expenditure data unavailable, using depreciation as maintenance capex estimate")
+    
     if not all([net_income is not None, depreciation is not None, capex is not None]):
         missing = []
         if net_income is None: missing.append("net income")
@@ -466,21 +472,22 @@ def estimate_maintenance_capex(financial_line_items: list) -> float:
     depreciation_values = []
 
     for item in financial_line_items[:5]:  # Last 5 periods
-        if hasattr(item, 'capital_expenditure') and hasattr(item, 'revenue'):
-            if item.capital_expenditure and item.revenue and item.revenue > 0:
-                capex_ratio = abs(item.capital_expenditure) / item.revenue
-                capex_ratios.append(capex_ratio)
+        item_capex = getattr(item, 'capital_expenditure', None)
+        item_revenue = getattr(item, 'revenue', None)
+        if item_capex and item_revenue and item_revenue > 0:
+            capex_ratio = abs(item_capex) / item_revenue
+            capex_ratios.append(capex_ratio)
 
-        if hasattr(item, 'depreciation_and_amortization') and item.depreciation_and_amortization:
-            depreciation_values.append(item.depreciation_and_amortization)
+        item_depreciation = getattr(item, 'depreciation_and_amortization', None)
+        if item_depreciation:
+            depreciation_values.append(item_depreciation)
 
     # Approach 2: Percentage of depreciation (typically 80-120% for maintenance)
-    latest_depreciation = financial_line_items[0].depreciation_and_amortization if financial_line_items[
-        0].depreciation_and_amortization else 0
+    latest_item = financial_line_items[0]
+    latest_depreciation = getattr(latest_item, 'depreciation_and_amortization', 0) or 0
 
     # Approach 3: Industry-specific heuristics
-    latest_capex = abs(financial_line_items[0].capital_expenditure) if financial_line_items[
-        0].capital_expenditure else 0
+    latest_capex = abs(getattr(latest_item, 'capital_expenditure', 0) or 0)
 
     # Conservative estimate: Use the higher of:
     # 1. 85% of total capex (assuming 15% is growth capex)
@@ -493,8 +500,7 @@ def estimate_maintenance_capex(financial_line_items: list) -> float:
     # If we have historical data, use average capex ratio
     if len(capex_ratios) >= 3:
         avg_capex_ratio = sum(capex_ratios) / len(capex_ratios)
-        latest_revenue = financial_line_items[0].revenue if hasattr(financial_line_items[0], 'revenue') and \
-                                                            financial_line_items[0].revenue else 0
+        latest_revenue = getattr(financial_line_items[0], 'revenue', None) or 0
         method_3 = avg_capex_ratio * latest_revenue if latest_revenue else 0
 
         # Use the median of the three approaches for conservatism
@@ -520,7 +526,7 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
 
     owner_earnings = earnings_data["owner_earnings"]
     latest_financial_line_items = financial_line_items[0]
-    shares_outstanding = latest_financial_line_items.outstanding_shares
+    shares_outstanding = getattr(latest_financial_line_items, 'outstanding_shares', None)
 
     if not shares_outstanding or shares_outstanding <= 0:
         return {"intrinsic_value": None, "details": ["Missing or invalid shares outstanding data"]}
@@ -531,8 +537,9 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
     # Estimate growth rate based on historical performance (more conservative)
     historical_earnings = []
     for item in financial_line_items[:5]:  # Last 5 years
-        if hasattr(item, 'net_income') and item.net_income:
-            historical_earnings.append(item.net_income)
+        ni = getattr(item, 'net_income', None)
+        if ni:
+            historical_earnings.append(ni)
 
     # Calculate historical growth rate
     if len(historical_earnings) >= 3:
@@ -630,12 +637,12 @@ def analyze_book_value_growth(financial_line_items: list) -> dict[str, any]:
         return {"score": 0, "details": "Insufficient data for book value analysis"}
 
     # Extract book values per share
-    book_values = [
-        item.shareholders_equity / item.outstanding_shares
-        for item in financial_line_items
-        if hasattr(item, 'shareholders_equity') and hasattr(item, 'outstanding_shares')
-        and item.shareholders_equity and item.outstanding_shares
-    ]
+    book_values = []
+    for item in financial_line_items:
+        se = getattr(item, 'shareholders_equity', None)
+        os_ = getattr(item, 'outstanding_shares', None)
+        if se and os_:
+            book_values.append(se / os_)
 
     if len(book_values) < 3:
         return {"score": 0, "details": "Insufficient book value data for growth analysis"}
@@ -707,8 +714,9 @@ def analyze_pricing_power(financial_line_items: list, metrics: list) -> dict[str
     # Check gross margin trends (ability to maintain/expand margins)
     gross_margins = []
     for item in financial_line_items:
-        if hasattr(item, 'gross_margin') and item.gross_margin is not None:
-            gross_margins.append(item.gross_margin)
+        gm = getattr(item, 'gross_margin', None)
+        if gm is not None:
+            gross_margins.append(gm)
 
     if len(gross_margins) >= 3:
         # Check margin stability/improvement
@@ -785,12 +793,17 @@ def generate_buffett_output(
                 "- Bearish: poor business OR clearly overvalued.\n"
                 "- Neutral: good business but margin_of_safety <= 0, or mixed evidence.\n"
                 "\n"
+                "CRITICAL DATA HANDLING:\n"
+                "- If facts show 'Insufficient data', 'data not available', or missing fields, REDUCE confidence to 10-30%.\n"
+                "- NEVER invent metrics like 'ROE is negative' or 'high debt' if data is missing.\n"
+                "- Be honest: say '关键财务数据缺失' / 'lacking key financial metrics' instead of inventing negative facts.\n"
+                "\n"
                 "Confidence scale:\n"
                 "- 90-100%: Exceptional business within my circle, trading at attractive price\n"
                 "- 70-89%: Good business with decent moat, fair valuation\n"
                 "- 50-69%: Mixed signals, would need more information or better price\n"
                 "- 30-49%: Outside my expertise or concerning fundamentals\n"
-                "- 10-29%: Poor business or significantly overvalued\n"
+                "- 10-29%: Poor business OR significant data gaps prevent reliable analysis\n"
                 "\n"
                 "Keep reasoning under 120 characters. Do not invent data. Return JSON only."
             ),

@@ -6,6 +6,7 @@ from src.data.models import CompanyNews
 import pandas as pd
 import numpy as np
 import json
+import signal
 
 from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api import get_company_news
@@ -13,6 +14,15 @@ from src.utils.api_key import get_api_key_from_state
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 from typing_extensions import Literal
+
+
+class LLMCallsTimeout(Exception):
+    """LLM call timed out"""
+    pass
+
+
+def timeout_handler(signum, frame):
+    raise LLMCallsTimeout("LLM call timed out")
 
 
 class Sentiment(BaseModel):
@@ -62,17 +72,13 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
             recent_articles = company_news[:10]
             articles_without_sentiment = [news for news in recent_articles if news.sentiment is None]
             
-            # Analyze only the 5 most recent articles without sentiment to reduce LLM calls
+            # Analyze only the 5 most recent articles without sentiment (with timeout protection)
             if articles_without_sentiment:
-              # We only take the first 5 articles, but this is configurable
               num_articles_to_analyze = 5
               articles_to_analyze = articles_without_sentiment[:num_articles_to_analyze]
               progress.update_status(agent_id, ticker, f"Analyzing sentiment for {len(articles_to_analyze)} articles")
               
               for idx, news in enumerate(articles_to_analyze):
-                # We analyze based on title, but can also pass in the entire article text,
-                # but this is more expensive and requires extracting the text from the article.
-                # Note: this is an opportunity for improvement!
                 progress.update_status(agent_id, ticker, f"Analyzing sentiment for article {idx + 1} of {len(articles_to_analyze)}")
                 prompt = (
                     f"Please analyze the sentiment of the following news headline "
@@ -80,16 +86,29 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
                     f"The stock is {ticker}. "
                     f"Determine if sentiment is 'positive', 'negative', or 'neutral' for the stock {ticker} only. "
                     f"Also provide a confidence score for your prediction from 0 to 100. "
-                    f"Respond in JSON format.\n\n"
+                    f"Respond in JSON format ONLY, no extra text.\n\n"
                     f"Headline: {news.title}"
                 )
-                response = call_llm(prompt, Sentiment, agent_name=agent_id, state=state)
-                if response:
-                    news.sentiment = response.sentiment.lower()
-                    sentiment_confidences[id(news)] = response.confidence
-                else:
+                
+                # Add timeout protection (10 seconds per article max)
+                try:
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(10)  # 10 second timeout
+                    response = call_llm(prompt, Sentiment, agent_name=agent_id, state=state, max_retries=1)
+                    signal.alarm(0)  # Cancel timeout
+                    
+                    if response:
+                        news.sentiment = response.sentiment.lower()
+                        sentiment_confidences[id(news)] = response.confidence
+                    else:
+                        news.sentiment = "neutral"
+                        sentiment_confidences[id(news)] = 0
+                except Exception:
+                    # Timeout or any error - default to neutral
+                    signal.alarm(0)
                     news.sentiment = "neutral"
                     sentiment_confidences[id(news)] = 0
+                
                 sentiments_classified_by_llm += 1
 
             # Aggregate sentiment across all articles

@@ -78,9 +78,9 @@ def format_sentiment_insights(reasoning: dict) -> str:
             else:
                 metric_notes.append("无新闻数据")
         
-        # Signal color class
-        signal_class = f"signal-{signal}"
-        
+        # Signal color class (lowercase for CSS consistency)
+        signal_class = f"signal-{signal.lower()}"
+
         # Build HTML for this category
         metrics_html = " · ".join(metric_notes)
         insights.append(f"""
@@ -105,6 +105,132 @@ def format_sentiment_insights(reasoning: dict) -> str:
         insights.append(f"""
             <div style="margin-top: 8px; padding: 8px; background: rgba(124, 58, 237, 0.15); border-radius: 8px; border-left: 3px solid #7c3aed;">
                 <div style="font-size: 0.75rem; color: #a78bfa; font-weight: 600;">🎯 {determination}</div>
+            </div>
+        """)
+    
+    return "\n".join(insights)
+
+
+def format_growth_insights(reasoning: dict) -> str:
+    """Convert growth analyst's metrics into human-readable Chinese insights."""
+    if not reasoning or not isinstance(reasoning, dict):
+        return ""
+    
+    category_names = {
+        "historical_growth": "📊 历史成长",
+        "growth_valuation": "💰 成长估值",
+        "margin_expansion": "📈 利润率趋势",
+        "insider_conviction": "👤 内部人士信心",
+        "financial_health": "🏦 财务健康"
+    }
+    
+    insights = []
+    
+    for category_key, category_data in reasoning.items():
+        if category_key not in category_names:
+            continue
+        if not isinstance(category_data, dict):
+            continue
+            
+        name = category_names[category_key]
+        score = category_data.get("score", 0)
+        
+        # Determine signal based on score
+        if score >= 0.7:
+            signal = "BULLISH"
+            signal_cn = "看涨"
+        elif score <= 0.3:
+            signal = "BEARISH"
+            signal_cn = "看跌"
+        else:
+            signal = "NEUTRAL"
+            signal_cn = "中性"
+        
+        # Build details string
+        details_parts = []
+        if category_key == "historical_growth":
+            rev_trend = category_data.get("revenue_trend", 0)
+            eps_trend = category_data.get("eps_trend", 0)
+            if rev_trend > 0.1:
+                details_parts.append(f"营收趋势 +{rev_trend:.1%}")
+            elif rev_trend < -0.1:
+                details_parts.append(f"营收趋势 {rev_trend:.1%}")
+            if eps_trend > 0.1:
+                details_parts.append(f"EPS趋势 +{eps_trend:.1%}")
+        
+        elif category_key == "growth_valuation":
+            peg = category_data.get("peg_ratio", 0)
+            ps = category_data.get("price_to_sales_ratio", 0)
+            details_parts.append(f"PEG: {peg:.2f}")
+            details_parts.append(f"P/S: {ps:.2f}")
+        
+        elif category_key == "margin_expansion":
+            gm = category_data.get("gross_margin", 0)
+            om = category_data.get("operating_margin", 0)
+            details_parts.append(f"毛利率: {gm:.1%}")
+            details_parts.append(f"经营利润率: {om:.1%}")
+        
+        elif category_key == "insider_conviction":
+            net_flow = category_data.get("net_flow_ratio", 0)
+            buys = category_data.get("buys", 0)
+            sells = category_data.get("sells", 0)
+            if abs(net_flow) > 0.5:
+                direction = "净买入" if net_flow > 0 else "净卖出"
+                details_parts.append(f"内部人士{direction}")
+        
+        elif category_key == "financial_health":
+            dte = category_data.get("debt_to_equity", 0)
+            cr = category_data.get("current_ratio", 0)
+            details_parts.append(f"D/E: {dte:.2f}")
+            details_parts.append(f"流动比率: {cr:.2f}")
+        
+        details = " · ".join(details_parts) if details_parts else f"评分: {score:.2f}"
+        
+        signal_class = f"signal-{signal.lower()}"
+        insights.append(f"""
+            <div style="margin-bottom: 8px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 6px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <span style="font-weight: 600; font-size: 0.8rem;">{name}</span>
+                    <span style="font-weight: 700; font-size: 0.75rem;" class="{signal_class}">{signal_cn}</span>
+                </div>
+                <div style="font-size: 0.7rem; color: #888;">{details}</div>
+            </div>
+        """)
+    
+    return "\n".join(insights)
+
+
+def format_fundamentals_insights(reasoning: dict) -> str:
+    """Convert fundamentals analyst's metrics into human-readable Chinese insights."""
+    if not reasoning or not isinstance(reasoning, dict):
+        return ""
+    
+    category_names = {
+        "profitability_signal": "💰 盈利能力",
+        "growth_signal": "📈 成长能力",
+        "financial_health_signal": "🏦 财务健康",
+        "price_ratios_signal": "📊 估值比率"
+    }
+    
+    insights = []
+    
+    for category_key, category_data in reasoning.items():
+        if category_key not in category_names:
+            continue
+            
+        name = category_names[category_key]
+        signal = category_data.get("signal", "neutral").upper()
+        signal_cn = {"BULLISH": "看涨", "BEARISH": "看跌", "NEUTRAL": "中性"}.get(signal, signal)
+        details = category_data.get("details", "")
+        
+        signal_class = f"signal-{signal.lower()}"
+        insights.append(f"""
+            <div style="margin-bottom: 8px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 6px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <span style="font-weight: 600; font-size: 0.8rem;">{name}</span>
+                    <span style="font-weight: 700; font-size: 0.75rem;" class="{signal_class}">{signal_cn}</span>
+                </div>
+                <div style="font-size: 0.7rem; color: #888;">{details}</div>
             </div>
         """)
     
@@ -198,9 +324,9 @@ def format_technical_insights(reasoning: dict) -> str:
             if kurt > 4:
                 metric_notes.append(f"峰度 {kurt:.1f} (肥尾)")
         
-        # Signal color class
-        signal_class = f"signal-{signal}"
-        
+        # Signal color class (lowercase for CSS consistency)
+        signal_class = f"signal-{signal.lower()}"
+
         # Build HTML for this strategy
         metrics_html = " · ".join(metric_notes)
         insights.append(f"""
@@ -413,11 +539,17 @@ def generate_html_report(analyst_signals, decisions, timestamp):
                 confidence = signal_data.get("confidence", 0)
                 reasoning = signal_data.get("reasoning", "")
                 
-                # Check if this is technical or sentiment analysis (has nested strategies)
+                # Check if this is technical, sentiment, news_sentiment, fundamentals, or growth analysis
                 if agent == "technical_analyst_agent" and isinstance(reasoning, dict):
                     reasoning_html = format_technical_insights(reasoning)
                 elif agent == "sentiment_analyst_agent" and isinstance(reasoning, dict):
                     reasoning_html = format_sentiment_insights(reasoning)
+                elif agent == "news_sentiment_agent" and isinstance(reasoning, dict):
+                    reasoning_html = format_sentiment_insights(reasoning)
+                elif agent == "fundamentals_analyst_agent" and isinstance(reasoning, dict):
+                    reasoning_html = format_fundamentals_insights(reasoning)
+                elif agent == "growth_analyst_agent" and isinstance(reasoning, dict):
+                    reasoning_html = format_growth_insights(reasoning)
                 else:
                     reasoning_html = str(reasoning) if reasoning else ""
             else:
@@ -431,9 +563,9 @@ def generate_html_report(analyst_signals, decisions, timestamp):
             except (ValueError, TypeError):
                 confidence = 0.0
 
-            # Make technical and sentiment analyst cards wider to show all strategies
+            # Make technical, sentiment, and news_sentiment analyst cards wider to show all strategies
             card_style = ""
-            if agent == "technical_analyst_agent" or agent == "sentiment_analyst_agent":
+            if agent in ["technical_analyst_agent", "sentiment_analyst_agent", "news_sentiment_agent"]:
                 card_style = "grid-column: span 2;"
             
             html_content += f"""

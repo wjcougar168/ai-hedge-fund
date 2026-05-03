@@ -7,6 +7,11 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Set up VPN proxy for yfinance (works in mainland China)
+# This is a free workaround for rate limits and access restrictions
+os.environ.setdefault('HTTP_PROXY', 'http://127.0.0.1:7897')
+os.environ.setdefault('HTTPS_PROXY', 'http://127.0.0.1:7897')
+
 from src.data.cache import get_cache
 from src.data.models import (
     CompanyNews,
@@ -68,8 +73,33 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
     if cached_data and len(cached_data) >= 20:  # Just need enough for technical analysis
         logger.info(f"Using {len(cached_data)} cached price points for {ticker}")
         return [Price(**price) for price in cached_data]
-    
-    # Step 2: Try financialdatasets.ai API
+
+    # Step 2: Try yfinance FIRST (free, unlimited, works with VPN)
+    try:
+        import yfinance as yf
+        from requests.exceptions import RequestException
+
+        yf_ticker = yf.Ticker(ticker)
+        hist = yf_ticker.history(start=start_date, end=end_date)
+        if not hist.empty:
+            prices = []
+            for idx, row in hist.iterrows():
+                prices.append(Price(
+                    time=idx.strftime("%Y-%m-%d"),
+                    ticker=ticker,
+                    open=float(row["Open"]),
+                    high=float(row["High"]),
+                    low=float(row["Low"]),
+                    close=float(row["Close"]),
+                    volume=int(row["Volume"]),
+                ))
+            _cache.set_prices(ticker, [p.model_dump() for p in prices])
+            logger.info(f"Successfully retrieved {len(prices)} price points for {ticker} via yfinance")
+            return prices
+    except Exception as e:
+        logger.info(f"yfinance price fetch failed for {ticker}: {e}, trying fallbacks")
+
+    # Step 3: Try financialdatasets.ai API
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
     if financial_api_key:
@@ -254,7 +284,114 @@ def get_financial_metrics(
     if cached_data := _cache.get_financial_metrics(ticker):
         return [FinancialMetrics(**metric) for metric in cached_data]
 
-    # If not in cache, fetch from API
+    # Try yfinance FIRST (free, unlimited, works with VPN)
+    try:
+        import yfinance as yf
+        from datetime import datetime
+
+        # Get stock info from yfinance
+        yf_ticker = yf.Ticker(ticker)
+
+        # Get HISTORICAL quarterly financials (for Growth Analyst)
+        quarterly_financials = yf_ticker.quarterly_financials
+        info = yf_ticker.info
+
+        if quarterly_financials is not None and len(quarterly_financials.columns) >= 1:
+            financial_metrics = []
+            all_quarters = list(quarterly_financials.columns)[:limit]  # Get up to N quarters
+
+            def safe_float(data_dict, key, default=0):
+                val = data_dict.get(key, default)
+                try:
+                    import math
+                    if val is None or val == "" or val == "None" or (isinstance(val, float) and math.isnan(val)):
+                        return default
+                    return float(val)
+                except (ValueError, TypeError):
+                    return default
+
+            # First pass: collect only valid quarters with revenue data
+            valid_quarters = []
+            for quarter_date in all_quarters:
+                report = quarterly_financials[quarter_date]
+                revenue = safe_float(report, "Total Revenue")
+                if revenue > 0:
+                    valid_quarters.append((quarter_date, report))
+
+            for i, (quarter_date, report) in enumerate(valid_quarters):
+                revenue = safe_float(report, "Total Revenue")
+                gross_profit = safe_float(report, "Gross Profit")
+                operating_income = safe_float(report, "Operating Income")
+                net_income = safe_float(report, "Net Income")
+
+                # Calculate margins
+                gross_margin = gross_profit / revenue if revenue > 0 else 0
+                operating_margin = operating_income / revenue if revenue > 0 else 0
+                net_margin = net_income / revenue if revenue > 0 else 0
+
+                # Get growth from previous quarter (now using valid_quarters index)
+                rev_growth = None
+                if i > 0 and i < len(valid_quarters):
+                    prev_report = valid_quarters[i-1][1]
+                    prev_revenue = safe_float(prev_report, "Total Revenue")
+                    if prev_revenue > 0:
+                        rev_growth = (revenue - prev_revenue) / prev_revenue
+
+                metrics = FinancialMetrics(
+                    ticker=ticker,
+                    report_period=quarter_date.strftime("%Y-%m-%d"),
+                    period=period,
+                    currency="USD",
+                    market_cap=safe_float(info, "marketCap") if info else None,
+                    enterprise_value=safe_float(info, "enterpriseValue") if info else None,
+                    price_to_earnings_ratio=safe_float(info, "trailingPE") if info else None,
+                    price_to_book_ratio=safe_float(info, "priceToBook") if info else None,
+                    price_to_sales_ratio=safe_float(info, "priceToSalesTrailing12Months") if info else None,
+                    enterprise_value_to_revenue_ratio=safe_float(info, "enterpriseToRevenue") if info else None,
+                    enterprise_value_to_ebitda_ratio=safe_float(info, "enterpriseToEbitda") if info else None,
+                    free_cash_flow_yield=None,
+                    peg_ratio=safe_float(info, "pegRatio") if info else None,
+                    gross_margin=gross_margin,
+                    operating_margin=operating_margin,
+                    net_margin=net_margin,
+                    return_on_equity=safe_float(info, "returnOnEquity") if info else None,
+                    return_on_assets=safe_float(info, "returnOnAssets") if info else None,
+                    return_on_invested_capital=None,
+                    asset_turnover=None,
+                    inventory_turnover=None,
+                    receivables_turnover=None,
+                    days_sales_outstanding=None,
+                    operating_cycle=None,
+                    working_capital_turnover=None,
+                    current_ratio=safe_float(info, "currentRatio") if info else None,
+                    quick_ratio=safe_float(info, "quickRatio") if info else None,
+                    cash_ratio=None,
+                    operating_cash_flow_ratio=None,
+                    debt_to_equity=safe_float(info, "debtToEquity") if info else None,
+                    debt_to_assets=None,
+                    interest_coverage=None,
+                    revenue_growth=rev_growth,
+                    earnings_growth=safe_float(info, "earningsGrowth") if info else None,
+                    book_value_growth=None,
+                    earnings_per_share_growth=None,
+                    free_cash_flow_growth=None,
+                    operating_income_growth=None,
+                    ebitda_growth=None,
+                    payout_ratio=None,
+                    earnings_per_share=safe_float(info, "trailingEps") if info else None,
+                    book_value_per_share=safe_float(info, "bookValue") if info else None,
+                    free_cash_flow_per_share=None,
+                )
+                financial_metrics.append(metrics)
+
+            if len(financial_metrics) >= 1:
+                _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
+                logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via yfinance")
+                return financial_metrics
+    except Exception as e:
+        logger.info(f"yfinance financial metrics failed for {ticker}: {e}, trying fallbacks")
+
+    # Fallback 1: financialdatasets.ai (if API key has credits)
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
     if financial_api_key:
@@ -264,7 +401,134 @@ def get_financial_metrics(
     response = _make_api_request(url, headers)
     api_success = response.status_code == 200 and not response.json().get("error")
 
-    # Fallback to Alpha Vantage first (proper API, predictable rate limits)
+    # Check data quality: if primary API returns but all revenue_growth are None, try fallback
+    if api_success:
+        # Parse response with Pydantic model
+        try:
+            metrics_response = FinancialMetricsResponse(**response.json())
+            financial_metrics = metrics_response.financial_metrics
+        except Exception as e:
+            logger.info("Failed to parse financial metrics response for %s: %s", ticker, e)
+            api_success = False
+
+        if api_success:
+            # Check growth data quality
+            data = response.json()
+            if "financial_metrics" in data and len(data["financial_metrics"]) > 0:
+                growth_vals = [m.get("revenue_growth") for m in data["financial_metrics"]]
+                has_valid_growth = any(v is not None for v in growth_vals)
+                if not has_valid_growth:
+                    logger.info(f"financialdatasets.ai returned data for {ticker} but no revenue_growth, trying fallbacks")
+                    api_success = False
+
+        if api_success and financial_metrics:
+            _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
+            return financial_metrics
+
+    # Fallback to Finnhub first (best free tier: 60 calls/minute)
+    # NOTE: Finnhub stock/financials is PAID ONLY on free tier (403 error)
+    finnhub_key = os.environ.get("FINNHUB_API_KEY")
+    if not api_success and finnhub_key:
+        try:
+            import requests
+            from datetime import datetime
+
+            url = f"https://finnhub.io/api/v1/stock/financials?symbol={ticker}&frequency=quarterly&token={finnhub_key}"
+            fh_response = requests.get(url, timeout=15)
+
+            if fh_response.status_code == 403:
+                logger.info(f"Finnhub stock/financials is PAID-ONLY (403), skipping - {ticker}")
+            elif fh_response.status_code == 200:
+                data = fh_response.json()
+                # Check for rate limit
+                if "error" in data and "limit" in data["error"].lower():
+                    logger.info(f"Finnhub rate limit reached for financial metrics - {ticker}")
+                elif data and "financials" in data and len(data["financials"]) >= 1:
+                    # Got historical financial statements - build multiple FinancialMetrics records
+                    reports = data["financials"][:limit]
+                    financial_metrics = []
+
+                    def safe_float(data_dict, key, default=0):
+                        val = data_dict.get(key, default)
+                        try:
+                            return float(val) if val and val != "None" and val != "" else default
+                        except (ValueError, TypeError):
+                            return default
+
+                    for i, report in enumerate(reports):
+                        report_date = report.get("period", datetime.now().strftime("%Y-%m-%d"))
+                        
+                        revenue = safe_float(report, "Revenue")
+                        gross_profit = safe_float(report, "GrossProfit")
+                        operating_income = safe_float(report, "OperatingIncome")
+                        net_income = safe_float(report, "NetIncome")
+                        
+                        # Calculate margins
+                        gross_margin = gross_profit / revenue if revenue > 0 else 0
+                        operating_margin = operating_income / revenue if revenue > 0 else 0
+                        net_margin = net_income / revenue if revenue > 0 else 0
+
+                        # Get growth from previous quarter (if available)
+                        rev_growth = None
+                        if i > 0 and i < len(reports):
+                            prev_rev = safe_float(reports[i], "Revenue")
+                            if prev_rev > 0:
+                                rev_growth = (revenue - prev_rev) / prev_rev
+
+                        metrics = FinancialMetrics(
+                            ticker=ticker,
+                            report_period=report_date,
+                            period=period,
+                            currency="USD",
+                            market_cap=None,
+                            enterprise_value=None,
+                            price_to_earnings_ratio=None,
+                            price_to_book_ratio=None,
+                            price_to_sales_ratio=None,
+                            enterprise_value_to_ebitda_ratio=None,
+                            free_cash_flow_yield=None,
+                            peg_ratio=None,
+                            gross_margin=gross_margin,
+                            operating_margin=operating_margin,
+                            net_margin=net_margin,
+                            return_on_equity=safe_float(report, "ReturnOnEquityTTM"),
+                            return_on_assets=safe_float(report, "ReturnOnAssetsTTM"),
+                            return_on_invested_capital=None,
+                            asset_turnover=None,
+                            inventory_turnover=None,
+                            receivables_turnover=None,
+                            days_sales_outstanding=None,
+                            operating_cycle=None,
+                            working_capital_turnover=None,
+                            current_ratio=safe_float(report, "CurrentRatio"),
+                            quick_ratio=safe_float(report, "QuickRatio"),
+                            cash_ratio=None,
+                            operating_cash_flow_ratio=None,
+                            debt_to_equity=safe_float(report, "DebtToEquity"),
+                            debt_to_assets=None,
+                            interest_coverage=None,
+                            revenue_growth=rev_growth,
+                            earnings_growth=None,
+                            book_value_growth=None,
+                            earnings_per_share_growth=None,
+                            free_cash_flow_growth=None,
+                            operating_income_growth=None,
+                            ebitda_growth=None,
+                            payout_ratio=None,
+                            earnings_per_share=safe_float(report, "EPS"),
+                            book_value_per_share=None,
+                            free_cash_flow_per_share=None,
+                        )
+                        financial_metrics.append(metrics)
+
+                    if len(financial_metrics) >= 1:
+                        _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
+                        logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via Finnhub")
+                        api_success = True
+        except Exception as e:
+            logger.info(f"Finnhub financial metrics fallback failed for {ticker}: {e}")
+
+    # Fallback to Alpha Vantage next (proper API, 25 calls/day free limit)
     alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     if not api_success and alpha_vantage_key:
         try:
@@ -367,101 +631,9 @@ def get_financial_metrics(
         except Exception as e:
             logger.info(f"Alpha Vantage financial metrics fallback failed for {ticker}: {e}")
 
-    # Last resort: try yfinance
-    if not api_success:
-        try:
-            import yfinance as yf
-            import time
-            from datetime import datetime
-
-            # Get stock info from yfinance
-            yf_ticker = yf.Ticker(ticker)
-            info = yf_ticker.info
-
-            if info:
-                # Build financial metrics from yfinance data
-                report_date = datetime.now().strftime("%Y-%m-%d")
-                
-                # Map yfinance keys to our model fields
-                metrics = {
-                    "ticker": ticker,
-                    "report_period": report_date,
-                    "period": period,
-                    "currency": "USD",
-                    "free_cash_flow_yield": None,
-                    "return_on_invested_capital": None,
-                    "asset_turnover": None,
-                    "inventory_turnover": None,
-                    "receivables_turnover": None,
-                    "days_sales_outstanding": None,
-                    "operating_cycle": None,
-                    "working_capital_turnover": None,
-                    "cash_ratio": None,
-                    "operating_cash_flow_ratio": None,
-                    "debt_to_assets": None,
-                    "interest_coverage": None,
-                    "book_value_growth": None,
-                    "earnings_per_share_growth": None,
-                    "free_cash_flow_growth": None,
-                    "operating_income_growth": None,
-                    "ebitda_growth": None,
-                    "payout_ratio": None,
-                    "free_cash_flow_per_share": None,
-                }
-
-                # Key mappings with safe access to all fields
-                field_mappings = {
-                    "market_cap": "marketCap",
-                    "enterprise_value": "enterpriseValue",
-                    "price_to_earnings_ratio": "trailingPE",
-                    "price_to_book_ratio": "priceToBook",
-                    "price_to_sales_ratio": "priceToSalesTrailing12Months",
-                    "enterprise_value_to_revenue_ratio": "enterpriseToRevenue",
-                    "enterprise_value_to_ebitda_ratio": "enterpriseToEbitda",
-                    "net_margin": "profitMargins",
-                    "gross_margin": "grossMargins",
-                    "operating_margin": "operatingMargins",
-                    "return_on_assets": "returnOnAssets",
-                    "return_on_equity": "returnOnEquity",
-                    "revenue_growth": "revenueGrowth",
-                    "earnings_growth": "earningsGrowth",
-                    "debt_to_equity": "debtToEquity",
-                    "current_ratio": "currentRatio",
-                    "quick_ratio": "quickRatio",
-                    "peg_ratio": "pegRatio",
-                    "book_value_per_share": "bookValue",
-                    "earnings_per_share": "trailingEps",
-                }
-
-                # Map all numeric fields safely
-                for our_key, yf_key in field_mappings.items():
-                    metrics[our_key] = float(info.get(yf_key, 0)) if info.get(yf_key) else 0
-
-                financial_metrics = [FinancialMetrics(**metrics)]
-                _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
-                logger.info(f"Successfully retrieved financial metrics for {ticker} via yfinance")
-                return financial_metrics
-        except Exception as e:
-            logger.info(f"yfinance financial metrics fallback failed for {ticker}: {e}")
-
-        # NO DEMO DATA - Return empty list if no real data found
-        logger.info(f"No real financial metrics data available for {ticker}")
-        return []
-
-    # Parse response with Pydantic model
-    try:
-        metrics_response = FinancialMetricsResponse(**response.json())
-        financial_metrics = metrics_response.financial_metrics
-    except Exception as e:
-        logger.info("Failed to parse financial metrics response for %s: %s", ticker, e)
-        return []
-
-    if not financial_metrics:
-        return []
-
-    # Cache the results as dicts using the comprehensive cache key
-    _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
-    return financial_metrics
+    # NO DEMO DATA - Return empty list if no real data found
+    logger.info(f"No real financial metrics data available for {ticker}")
+    return []
 
 
 def search_line_items(

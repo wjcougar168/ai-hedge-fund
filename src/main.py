@@ -177,6 +177,27 @@ def format_technical_insights(reasoning: dict) -> str:
             elif hv < 0.2:
                 metric_notes.append(f"波动率 {hv:.1%} (低波动)")
         
+        elif strategy_key == "statistical_arbitrage":
+            hurst = metrics.get("hurst_exponent", 0.5)
+            skew = metrics.get("skewness", 0)
+            kurt = metrics.get("kurtosis", 3)
+            
+            # Hurst exponent interpretation
+            if hurst < 0.4:
+                metric_notes.append(f"Hurst {hurst:.2f} (均值回归)")
+            elif hurst > 0.6:
+                metric_notes.append(f"Hurst {hurst:.2f} (强趋势)")
+            else:
+                metric_notes.append(f"Hurst {hurst:.2f} (随机游走)")
+            
+            # Skewness
+            if abs(skew) > 1:
+                metric_notes.append(f"偏度 {skew:.2f}")
+            
+            # Kurtosis (fat tails - interesting for stat arb)
+            if kurt > 4:
+                metric_notes.append(f"峰度 {kurt:.1f} (肥尾)")
+        
         # Signal color class
         signal_class = f"signal-{signal}"
         

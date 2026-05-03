@@ -273,7 +273,8 @@ def get_financial_metrics(
             import requests
             from datetime import datetime
 
-            url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={alpha_vantage_key}"
+            # First try to get historical financial data from INCOME_STATEMENT
+            url = f"https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol={ticker}&apikey={alpha_vantage_key}"
             av_response = requests.get(url, timeout=15)
 
             if av_response.status_code == 200:
@@ -281,67 +282,90 @@ def get_financial_metrics(
                 # Check for rate limit
                 if "Information" in data and "rate limit" in data["Information"].lower():
                     logger.info(f"Alpha Vantage rate limit reached for financial metrics - {ticker}")
-                elif data and "Symbol" in data:
-                    # Build financial metrics from Alpha Vantage
-                    report_date = datetime.now().strftime("%Y-%m-%d")
+                elif data and "quarterlyReports" in data and len(data["quarterlyReports"]) >= 1:
+                    # Got historical income statements - build multiple FinancialMetrics records
+                    reports = data["quarterlyReports"][:limit]  # Use first N quarterly reports
+                    financial_metrics = []
 
-                    def safe_float(key, default=0):
-                        val = data.get(key, default)
+                    def safe_float(data_dict, key, default=0):
+                        val = data_dict.get(key, default)
                         try:
-                            return float(val) if val and val != "None" else default
+                            return float(val) if val and val != "None" and val != "" else default
                         except (ValueError, TypeError):
                             return default
 
-                    metrics = FinancialMetrics(
-                        ticker=ticker,
-                        report_period=report_date,
-                        period=period,
-                        currency="USD",
-                        market_cap=safe_float("MarketCapitalization"),
-                        enterprise_value=safe_float("MarketCapitalization") * 1.1,  # Approximate
-                        price_to_earnings_ratio=safe_float("PERatio"),
-                        price_to_book_ratio=safe_float("PriceToBookRatio"),
-                        price_to_sales_ratio=safe_float("PriceToSalesRatioTTM"),
-                        enterprise_value_to_ebitda_ratio=safe_float("EVToEBITDA"),
-                        enterprise_value_to_revenue_ratio=safe_float("EVToRevenue"),
-                        free_cash_flow_yield=None,
-                        peg_ratio=safe_float("PEGRatio"),
-                        gross_margin=safe_float("GrossProfitTTM") / safe_float("RevenueTTM", 1) if safe_float("RevenueTTM") > 0 else 0,
-                        operating_margin=safe_float("OperatingMarginTTM"),
-                        net_margin=safe_float("ProfitMargin"),
-                        return_on_equity=safe_float("ReturnOnEquityTTM"),
-                        return_on_assets=safe_float("ReturnOnAssetsTTM"),
-                        return_on_invested_capital=None,
-                        asset_turnover=None,
-                        inventory_turnover=None,
-                        receivables_turnover=None,
-                        days_sales_outstanding=None,
-                        operating_cycle=None,
-                        working_capital_turnover=None,
-                        current_ratio=safe_float("CurrentRatio"),
-                        quick_ratio=safe_float("QuickRatio"),
-                        cash_ratio=None,
-                        operating_cash_flow_ratio=None,
-                        debt_to_equity=safe_float("DebtToEquityRatio"),
-                        debt_to_assets=None,
-                        interest_coverage=None,
-                        revenue_growth=safe_float("RevenueGrowthYOY"),
-                        earnings_growth=safe_float("EarningsGrowthYOY"),
-                        book_value_growth=None,
-                        earnings_per_share_growth=None,
-                        free_cash_flow_growth=None,
-                        operating_income_growth=None,
-                        ebitda_growth=None,
-                        payout_ratio=None,
-                        earnings_per_share=safe_float("EPS"),
-                        book_value_per_share=safe_float("BookValue"),
-                        free_cash_flow_per_share=None,
-                    )
+                    for i, report in enumerate(reports):
+                        report_date = report.get("fiscalDateEnding", datetime.now().strftime("%Y-%m-%d"))
+                        
+                        revenue = safe_float(report, "totalRevenue")
+                        gross_profit = safe_float(report, "grossProfit")
+                        operating_income = safe_float(report, "operatingIncome")
+                        net_income = safe_float(report, "netIncome")
+                        
+                        # Calculate margins
+                        gross_margin = gross_profit / revenue if revenue > 0 else 0
+                        operating_margin = operating_income / revenue if revenue > 0 else 0
+                        net_margin = net_income / revenue if revenue > 0 else 0
 
-                    financial_metrics = [metrics]
-                    _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
-                    logger.info(f"Successfully retrieved financial metrics for {ticker} via Alpha Vantage")
-                    return financial_metrics
+                        # Get growth from previous quarter (if available)
+                        rev_growth = None
+                        if i > 0 and i < len(reports):
+                            prev_rev = safe_float(reports[i], "totalRevenue")
+                            if prev_rev > 0:
+                                rev_growth = (revenue - prev_rev) / prev_rev
+
+                        metrics = FinancialMetrics(
+                            ticker=ticker,
+                            report_period=report_date,
+                            period=period,
+                            currency="USD",
+                            market_cap=None,  # Not in income statement
+                            enterprise_value=None,
+                            price_to_earnings_ratio=None,
+                            price_to_book_ratio=None,
+                            price_to_sales_ratio=None,
+                            enterprise_value_to_ebitda_ratio=None,
+                            enterprise_value_to_revenue_ratio=None,
+                            free_cash_flow_yield=None,
+                            peg_ratio=None,
+                            gross_margin=gross_margin,
+                            operating_margin=operating_margin,
+                            net_margin=net_margin,
+                            return_on_equity=None,
+                            return_on_assets=None,
+                            return_on_invested_capital=None,
+                            asset_turnover=None,
+                            inventory_turnover=None,
+                            receivables_turnover=None,
+                            days_sales_outstanding=None,
+                            operating_cycle=None,
+                            working_capital_turnover=None,
+                            current_ratio=None,
+                            quick_ratio=None,
+                            cash_ratio=None,
+                            operating_cash_flow_ratio=None,
+                            debt_to_equity=None,
+                            debt_to_assets=None,
+                            interest_coverage=None,
+                            revenue_growth=rev_growth,
+                            earnings_growth=None,
+                            book_value_growth=None,
+                            earnings_per_share_growth=None,
+                            free_cash_flow_growth=None,
+                            operating_income_growth=None,
+                            ebitda_growth=None,
+                            payout_ratio=None,
+                            earnings_per_share=safe_float(report, "reportedEPS"),
+                            book_value_per_share=None,
+                            free_cash_flow_per_share=None,
+                        )
+                        financial_metrics.append(metrics)
+
+                    if len(financial_metrics) >= 1:
+                        _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
+                        logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via Alpha Vantage")
+                        return financial_metrics
+
         except Exception as e:
             logger.info(f"Alpha Vantage financial metrics fallback failed for {ticker}: {e}")
 

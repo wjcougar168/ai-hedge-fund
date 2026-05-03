@@ -41,6 +41,7 @@ def add_common_args(
     if include_ollama:
         parser.add_argument("--ollama", action="store_true", help="Use Ollama for local LLM inference")
     parser.add_argument("--model", type=str, required=False, help="Model name to use (e.g., gpt-4o)")
+    parser.add_argument("--language", type=str, default="en", help="Output language: en (English) or zh (Chinese)")
     return parser
 
 
@@ -115,6 +116,15 @@ def select_model(use_ollama: bool, model_flag: str | None = None) -> tuple[str, 
             return model.model_name, model.provider.value
         else:
             print(f"{Fore.RED}Model '{model_flag}' not found. Please select a model.{Style.RESET_ALL}")
+
+    # Default to ark-code-latest when no model flag specified and not using Ollama
+    if not use_ollama and not model_flag:
+        model = find_model_by_name("ark-code-latest")
+        if model:
+            print(
+                f"\nUsing default model: {Fore.CYAN}{model.provider.value}{Style.RESET_ALL} - {Fore.GREEN + Style.BRIGHT}{model.model_name}{Style.RESET_ALL}\n"
+            )
+            return model.model_name, model.provider.value
 
     if use_ollama:
         print(f"{Fore.CYAN}Using Ollama for local LLM inference.{Style.RESET_ALL}")
@@ -221,6 +231,7 @@ class CLIInputs:
     margin_requirement: float
     show_reasoning: bool = False
     show_agent_graph: bool = False
+    language: str = "en"
     raw_args: Optional[argparse.Namespace] = None
 
 
@@ -282,6 +293,7 @@ def parse_cli_inputs(
         margin_requirement=getattr(args, "margin_requirement", 0.0),
         show_reasoning=getattr(args, "show_reasoning", False),
         show_agent_graph=getattr(args, "show_agent_graph", False),
+        language=getattr(args, "language", "en"),
         raw_args=args,
     )
 

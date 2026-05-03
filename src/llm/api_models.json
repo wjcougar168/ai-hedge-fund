@@ -1,5 +1,10 @@
 [
   {
+    "display_name": "Ark Code Latest",
+    "model_name": "ark-code-latest",
+    "provider": "OpenAI"
+  },
+  {
     "display_name": "Grok 4",
     "model_name": "grok-4-0709",
     "provider": "xAI"
@@ -10,8 +15,8 @@
     "provider": "OpenAI"
   },
   {
-    "display_name": "Ark Code Latest",
-    "model_name": "ark-code-latest",
+    "display_name": "Doubao Pro 128K",
+    "model_name": "doubao-pro-128k-240515",
     "provider": "OpenAI"
   },
   {

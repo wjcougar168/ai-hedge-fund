@@ -76,6 +76,31 @@ def call_llm(
             
             model_info = get_model_info(model_name, model_provider)
             llm = get_model(model_name, model_provider, api_keys)
+
+            # Add Chinese instruction if language is set to zh in metadata
+            language = None
+            if state:
+                language = state.get("metadata", {}).get("language")
+
+            if language and language.lower().startswith("zh"):
+                chinese_instruction = "\n\n重要提示：请使用中文输出你的分析和推理(reasoning)内容。所有的分析解释都必须用中文撰写。"
+
+                # Get the actual messages from prompt - ChatPromptValue or list
+                messages = None
+                if hasattr(prompt, "messages"):
+                    messages = prompt.messages
+                elif isinstance(prompt, list):
+                    messages = prompt
+
+                if messages and len(messages) > 0:
+                    # Append to the last message's content
+                    last_msg = messages[-1]
+                    if hasattr(last_msg, "content"):
+                        original_content = str(last_msg.content)
+                        last_msg.content = original_content + chinese_instruction
+                    else:
+                        # String message
+                        messages[-1] = str(last_msg) + chinese_instruction
             
             # For non-JSON support models, or Volcengine Ark which doesn't support structured output
             if not (model_info and not model_info.has_json_mode()) and not is_ark_endpoint():

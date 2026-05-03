@@ -1,6 +1,11 @@
 import sys
+from pathlib import Path
 
+# Load environment variables from .env file - ALWAYS from project root
+# This ensures it works regardless of which directory you run from
 from dotenv import load_dotenv
+project_root = Path(__file__).parent.parent
+load_dotenv(project_root / ".env", override=True)
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 from colorama import Fore, Style, init
@@ -21,8 +26,328 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import json
 
-# Load environment variables from .env file
-load_dotenv()
+
+def generate_html_report(analyst_signals, decisions, timestamp):
+    """Generate a beautiful HTML report in Chinese."""
+    # Chinese translation helper for signals
+    def cn(text):
+        translations = {
+            'BULLISH': '看涨', 'BEARISH': '看跌', 'NEUTRAL': '中性',
+            'LONG': '做多', 'SHORT': '做空', 'HOLD': '持有'
+        }
+        return translations.get(text, text)
+    
+    html_content = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI对冲基金分析报告 - {timestamp}</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        h1 {{
+            text-align: center;
+            background: linear-gradient(90deg, #00d4ff, #7c3aed);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }}
+        .timestamp {{
+            text-align: center;
+            color: #888;
+            margin-bottom: 40px;
+            font-size: 0.9rem;
+        }}
+        .ticker-section {{
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }}
+        .ticker-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+        }}
+        .ticker-name {{
+            font-size: 2rem;
+            font-weight: 700;
+            color: #fff;
+        }}
+        .decision-tag {{
+            padding: 8px 20px;
+            border-radius: 50px;
+            font-weight: 700;
+            font-size: 1.1rem;
+            text-transform: uppercase;
+        }}
+        .decision-LONG {{ background: linear-gradient(135deg, #10b981, #059669); }}
+        .decision-SHORT {{ background: linear-gradient(135deg, #ef4444, #dc2626); }}
+        .decision-HOLD {{ background: linear-gradient(135deg, #6366f1, #4f46e5); }}
+        .analyst-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }}
+        .analyst-card {{
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transition: transform 0.2s, border-color 0.2s;
+        }}
+        .analyst-card:hover {{
+            transform: translateY(-2px);
+            border-color: rgba(124, 58, 237, 0.5);
+        }}
+        .analyst-name {{ font-size: 1.1rem; font-weight: 600; margin-bottom: 8px; color: #fff; }}
+        .analyst-signal {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }}
+        .signal-BULLISH {{ color: #10b981; font-weight: 700; }}
+        .signal-BEARISH {{ color: #ef4444; font-weight: 700; }}
+        .signal-NEUTRAL {{ color: #6366f1; font-weight: 700; }}
+        .confidence-bar {{
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }}
+        .confidence-fill {{ height: 100%; border-radius: 3px; }}
+        .confidence-BULLISH .confidence-fill {{ background: linear-gradient(90deg, #10b981, #34d399); }}
+        .confidence-BEARISH .confidence-fill {{ background: linear-gradient(90deg, #ef4444, #f87171); }}
+        .confidence-NEUTRAL .confidence-fill {{ background: linear-gradient(90deg, #6366f1, #818cf8); }}
+        .analyst-reasoning {{ font-size: 0.85rem; color: #a0a0a0; line-height: 1.5; }}
+        .decision-panel {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }}
+        .decision-item {{
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+        }}
+        .decision-label {{ font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }}
+        .decision-value {{ font-size: 1.5rem; font-weight: 700; margin-top: 5px; color: #fff; }}
+        .portfolio-section {{
+            background: rgba(124, 58, 237, 0.1);
+            border-radius: 16px;
+            padding: 30px;
+            border: 1px solid rgba(124, 58, 237, 0.3);
+        }}
+        .portfolio-title {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: #a78bfa;
+        }}
+        .portfolio-table {{ width: 100%; border-collapse: collapse; }}
+        .portfolio-table th {{
+            text-align: left;
+            padding: 12px;
+            border-bottom: 2px solid rgba(124, 58, 237, 0.5);
+            color: #a78bfa;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+        }}
+        .portfolio-table td {{
+            padding: 15px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }}
+        .portfolio-strategy {{
+            margin-top: 25px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 10px;
+            font-style: italic;
+            color: #bbb;
+            line-height: 1.6;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 AI对冲基金分析</h1>
+        <div class="timestamp">生成时间: {timestamp}</div>
+"""
+
+    # Add each ticker section
+    for ticker, ticker_decision in decisions.items():
+        decision = ticker_decision.get("action", "HOLD").upper()
+        html_content += f"""
+        <div class="ticker-section">
+            <div class="ticker-header">
+                <div class="ticker-name">{ticker}</div>
+                <div class="decision-tag decision-{decision}">{cn(decision)}</div>
+            </div>
+            
+            <div class="analyst-grid">
+"""
+
+        # Add each analyst's signal for this ticker
+        for agent, signals in analyst_signals.items():
+            if ticker not in signals:
+                continue
+            if agent == "risk_management_agent":
+                continue
+
+            signal_data = signals[ticker]
+            agent_name = agent.replace("_agent", "").replace("_", " ").title()
+            
+            # Handle different signal formats - could be string or dict
+            if isinstance(signal_data, str):
+                # If it's just a string signal, use defaults
+                signal = signal_data.upper()
+                confidence = 50
+                reasoning = ""
+            elif isinstance(signal_data, dict):
+                signal = signal_data.get("signal", "NEUTRAL").upper()
+                confidence = signal_data.get("confidence", 0)
+                reasoning = signal_data.get("reasoning", "")
+            else:
+                signal = "NEUTRAL"
+                confidence = 0
+                reasoning = ""
+            
+            # Ensure confidence is a number, not a string
+            try:
+                confidence = float(confidence)
+            except (ValueError, TypeError):
+                confidence = 0.0
+
+            html_content += f"""
+                <div class="analyst-card">
+                    <div class="analyst-name">{agent_name}</div>
+                    <div class="analyst-signal">
+                        <span class="signal-{signal}">{cn(signal)}</span>
+                        <span>{int(confidence)}%</span>
+                    </div>
+                    <div class="confidence-bar confidence-{signal}">
+                        <div class="confidence-fill" style="width: {confidence}%"></div>
+                    </div>
+                    <div class="analyst-reasoning">{reasoning}</div>
+                </div>
+"""
+
+        # Decision panel
+        html_content += f"""
+            </div>
+            
+            <div class="decision-panel">
+                <div class="decision-item">
+                    <div class="decision-label">操作</div>
+                    <div class="decision-value">{cn(decision)}</div>
+                </div>
+                <div class="decision-item">
+                    <div class="decision-label">数量</div>
+                    <div class="decision-value">{ticker_decision.get('quantity', 0)}</div>
+                </div>
+                <div class="decision-item">
+                    <div class="decision-label">置信度</div>
+                    <div class="decision-value">{ticker_decision.get('confidence', 0):.1f}%</div>
+                </div>
+            </div>
+        </div>
+"""
+
+    # Portfolio summary
+    html_content += f"""
+        <div class="portfolio-section">
+            <div class="portfolio-title">📊 投资组合摘要</div>
+            <table class="portfolio-table">
+                <thead>
+                    <tr>
+                        <th>股票代码</th>
+                        <th>操作</th>
+                        <th>数量</th>
+                        <th>置信度</th>
+                        <th>看涨</th>
+                        <th>看跌</th>
+                        <th>中性</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+    # Count bullish/bearish/neutral signals per ticker
+    for ticker, ticker_decision in decisions.items():
+        bullish_count = 0
+        bearish_count = 0
+        neutral_count = 0
+        
+        for agent, signals in analyst_signals.items():
+            if ticker not in signals:
+                continue
+            if agent == "risk_management_agent":
+                continue
+                
+            signal_data = signals[ticker]
+            if isinstance(signal_data, dict):
+                signal = signal_data.get("signal", "NEUTRAL").upper()
+            elif isinstance(signal_data, str):
+                signal = signal_data.upper()
+            else:
+                signal = "NEUTRAL"
+                
+            if "BULLISH" in signal or "LONG" in signal:
+                bullish_count += 1
+            elif "BEARISH" in signal or "SHORT" in signal:
+                bearish_count += 1
+            else:
+                neutral_count += 1
+
+        action = ticker_decision.get("action", "HOLD").upper()
+        html_content += f"""
+                    <tr>
+                        <td style="font-weight: 700; color: #fff;">{ticker}</td>
+                        <td class="signal-{action}">{cn(action)}</td>
+                        <td>{ticker_decision.get('quantity', 0)}</td>
+                        <td>{ticker_decision.get('confidence', 0):.1f}%</td>
+                        <td style="color: #10b981;">{bullish_count}</td>
+                        <td style="color: #ef4444;">{bearish_count}</td>
+                        <td style="color: #6366f1;">{neutral_count}</td>
+                    </tr>
+"""
+
+    # Find the strategy text from decisions
+    strategy_text = ""
+    if decisions:
+        for ticker, ticker_decision in decisions.items():
+            if ticker_decision.get('reasoning'):
+                strategy_text = ticker_decision.get('reasoning', '')
+                break
+
+    html_content += f"""
+                </tbody>
+            </table>
+            <div class="portfolio-strategy">
+                💡 {strategy_text}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    return html_content
 
 init(autoreset=True)
 
@@ -50,8 +375,9 @@ def run_hedge_fund(
     portfolio: dict,
     show_reasoning: bool = False,
     selected_analysts: list[str] = [],
-    model_name: str = "gpt-4.1",
+    model_name: str = "ark-code-latest",
     model_provider: str = "OpenAI",
+    language: str = "en",
 ):
     # Start progress tracking
     progress.start()
@@ -79,6 +405,7 @@ def run_hedge_fund(
                     "show_reasoning": show_reasoning,
                     "model_name": model_name,
                     "model_provider": model_provider,
+                    "language": language,
                 },
             },
         )
@@ -175,5 +502,38 @@ if __name__ == "__main__":
         selected_analysts=inputs.selected_analysts,
         model_name=inputs.model_name,
         model_provider=inputs.model_provider,
+        language=inputs.language,
     )
     print_trading_output(result)
+    
+    # Save result to file - ALWAYS use project's output directory
+    project_root = Path(__file__).parent.parent
+    output_dir = project_root / "output"
+    output_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Save JSON
+    json_path = output_dir / f"hedge_fund_analysis_{timestamp}.json"
+    with open(json_path, "w") as f:
+        json.dump(result, f, indent=2, default=str)
+    print(f"\n✅ Full analysis saved to: {json_path}")
+    
+    # Also save text report
+    text_path = output_dir / f"hedge_fund_analysis_{timestamp}.txt"
+    with open(text_path, "w") as f:
+        import contextlib
+        with contextlib.redirect_stdout(f):
+            print_trading_output(result)
+    print(f"✅ Text report saved to: {text_path}")
+    
+    # Generate beautiful HTML report
+    html_report = generate_html_report(
+        result.get("analyst_signals", {}),
+        result.get("decisions", {}),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    html_path = output_dir / f"hedge_fund_analysis_{timestamp}.html"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html_report)
+    print(f"✅ HTML report saved to: {html_path}")
+    print(f"   → Open in your browser for a beautiful, readable view!")

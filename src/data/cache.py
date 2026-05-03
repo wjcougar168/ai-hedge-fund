@@ -17,12 +17,17 @@ class Cache:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
+        # TTL settings for time-sensitive data (hours)
+        self.news_ttl_hours = 12       # News expires after 12 hours
+        self.insider_ttl_hours = 24    # Insider trades expire after 24 hours
+        
         # In-memory cache for fast lookups
         self._prices_cache: dict[str, list[dict[str, any]]] = {}
         self._financial_metrics_cache: dict[str, list[dict[str, any]]] = {}
         self._line_items_cache: dict[str, list[dict[str, any]]] = {}
         self._insider_trades_cache: dict[str, list[dict[str, any]]] = {}
         self._company_news_cache: dict[str, list[dict[str, any]]] = {}
+        self._market_cap_cache: dict[str, float] = {}
         
         # Load existing cached data from disk
         self._load_from_disk()
@@ -56,12 +61,15 @@ class Cache:
                             self._insider_trades_cache[ticker] = data
                         elif data_type == "company_news":
                             self._company_news_cache[ticker] = data
+                        elif data_type == "market_cap":
+                            # Market cap is stored as {"value": float}
+                            self._market_cap_cache[ticker] = data.get("value", 0)
                 except Exception as e:
                     print(f"Warning: Could not load cache file {cache_file}: {e}")
         except Exception as e:
             print(f"Warning: Could not load cache from disk: {e}")
     
-    def _save_to_disk(self, data_type: str, ticker: str, data: list[dict]):
+    def _save_to_disk(self, data_type: str, ticker: str, data: list[dict] | dict):
         """Save data to persistent disk cache."""
         try:
             cache_file = self._get_cache_file(data_type, ticker)
@@ -186,7 +194,11 @@ class Cache:
         return self._insider_trades_cache.get(ticker.upper())
     
     def has_sufficient_insider_trades(self, ticker: str, days: int = 90) -> bool:
-        """Check if we have recent enough insider trades."""
+        """Check if we have recent enough insider trades AND cache is fresh."""
+        # First check if cache is fresh enough
+        if not self._is_cache_fresh(ticker, "insider_trades", self.insider_ttl_hours):
+            return False
+        
         cached = self._insider_trades_cache.get(ticker.upper())
         if not cached or len(cached) == 0:
             return False
@@ -222,8 +234,23 @@ class Cache:
             return self._filter_by_date_range(cached, start_date, end_date, "date")
         return cached
     
+    def _is_cache_fresh(self, ticker: str, data_type: str, ttl_hours: int) -> bool:
+        """Check if cache file was modified recently enough."""
+        cache_file = self._get_cache_file(data_type, ticker)
+        if not cache_file.exists():
+            return False
+        try:
+            mtime = datetime.fromtimestamp(cache_file.stat().st_mtime)
+            age_hours = (datetime.now() - mtime).total_seconds() / 3600
+            return age_hours < ttl_hours
+        except:
+            return False
+
     def has_sufficient_company_news(self, ticker: str, start_date: str, end_date: str, min_count: int = 5) -> bool:
-        """Check if we have enough cached news for the date range."""
+        """Check if we have enough cached news for the date range AND it's fresh."""
+        # First check if cache is fresh enough
+        if not self._is_cache_fresh(ticker, "company_news", self.news_ttl_hours):
+            return False
         cached = self.get_company_news(ticker, start_date, end_date)
         return cached is not None and len(cached) >= min_count
 
@@ -233,6 +260,18 @@ class Cache:
         merged = self._merge_data(self._company_news_cache.get(ticker_upper), data, key_field="date")
         self._company_news_cache[ticker_upper] = merged
         self._save_to_disk("company_news", ticker_upper, merged)
+
+    def get_market_cap(self, ticker: str) -> float | None:
+        """Get cached market cap value (persisted permanently)."""
+        ticker_upper = ticker.upper()
+        return self._market_cap_cache.get(ticker_upper)
+
+    def set_market_cap(self, ticker: str, value: float):
+        """Set cached market cap value (persisted permanently)."""
+        ticker_upper = ticker.upper()
+        self._market_cap_cache[ticker_upper] = value
+        # Save as dict for consistency with other cache files
+        self._save_to_disk("market_cap", ticker_upper, {"value": value})
 
 
 # Global cache instance

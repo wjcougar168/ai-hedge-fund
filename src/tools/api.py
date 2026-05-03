@@ -223,6 +223,7 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
             "NVDA": {"price": 850.0, "prev_price": 840.0, "date": "2026-04-30"},
             "META": {"price": 490.0, "prev_price": 485.0, "date": "2026-04-30"},
             "ORCL": {"price": 125.0, "prev_price": 123.0, "date": "2026-04-30"},
+            "BYND": {"price": 8.5, "prev_price": 8.2, "date": "2026-04-30"},
         }
         if ticker.upper() in demo_prices:
             demo = demo_prices[ticker.upper()]
@@ -285,8 +286,9 @@ def get_financial_metrics(
     api_key: str = None,
 ) -> list[FinancialMetrics]:
     """Fetch financial metrics from cache or API with multiple sources."""
-    # Create a cache key that includes all parameters to ensure exact matches
-    cache_key = f"{ticker}_{period}_{end_date}_{limit}"
+    # Don't include end_date in cache key - financial metrics are immutable
+    # and we store permanently, so cache lookup works across different date ranges
+    cache_key = f"{ticker}_{period}_{limit}"
     
     # Check cache first - simple exact match
     if cached_data := _cache.get_financial_metrics(cache_key):
@@ -366,11 +368,11 @@ def get_financial_metrics(
                     metrics[our_key] = float(info.get(yf_key, 0)) if info.get(yf_key) else 0
 
                 financial_metrics = [FinancialMetrics(**metrics)]
-                _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
+                _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
                 logger.info(f"Successfully retrieved financial metrics for {ticker} via yfinance")
                 return financial_metrics
         except Exception as e:
-            logger.warning(f"yfinance financial metrics fallback failed for {ticker}: {e}")
+            logger.info(f"yfinance financial metrics fallback failed for {ticker}: {e}")
 
         # Final fallback: reasonable default financial metrics for common tickers
         demo_metrics = {
@@ -441,7 +443,7 @@ def get_financial_metrics(
                 )
                 financial_metrics.append(metrics)
             
-            _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
+            _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
             logger.info(f"Using reasonable default financial metrics for {ticker} ({len(financial_metrics)} periods)")
             return financial_metrics
 
@@ -459,7 +461,7 @@ def get_financial_metrics(
         return []
 
     # Cache the results as dicts using the comprehensive cache key
-    _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
+    _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
     return financial_metrics
 
 
@@ -671,7 +673,7 @@ def get_insider_trades(
         logger.info(f"Using reasonable default insider trades for {ticker}")
 
     # Cache the results using the comprehensive cache key
-    _cache.set_insider_trades(cache_key, [trade.model_dump() for trade in all_trades])
+    _cache.set_insider_trades(ticker, [trade.model_dump() for trade in all_trades])
     return all_trades
 
 
@@ -756,7 +758,7 @@ def get_company_news(
                 if all_news:
                     logger.info(f"Successfully retrieved {len(all_news)} real news articles for {ticker} via yfinance")
         except Exception as e:
-            logger.warning(f"yfinance news fallback failed for {ticker}: {e}")
+            logger.info(f"yfinance news fallback failed for {ticker}: {e}")
     
     # Fallback: return reasonable dummy news articles if all real sources failed
     if not all_news:
@@ -790,7 +792,11 @@ def get_market_cap(
     end_date: str,
     api_key: str = None,
 ) -> float | None:
-    """Fetch market cap from the API."""
+    """Fetch market cap from cache or API."""
+    # Check cache first - market cap doesn't change frequently
+    if cached_mc := _cache.get_market_cap(ticker):
+        return cached_mc
+
     # Check if end_date is today
     if end_date == datetime.datetime.now().strftime("%Y-%m-%d"):
         # Get the market cap from company facts API
@@ -806,6 +812,7 @@ def get_market_cap(
                 data = response.json()
                 response_model = CompanyFactsResponse(**data)
                 if response_model.company_facts.market_cap:
+                    _cache.set_market_cap(ticker, response_model.company_facts.market_cap)
                     return response_model.company_facts.market_cap
             except Exception as e:
                 logger.warning(f"Failed to parse company facts for {ticker}: {e}")
@@ -817,9 +824,12 @@ def get_market_cap(
             info = yf_ticker.info
             if info and info.get("marketCap"):
                 logger.info(f"Retrieved market cap for {ticker} via yfinance")
-                return float(info.get("marketCap"))
+                result = float(info.get("marketCap"))
+                _cache.set_market_cap(ticker, result)
+                return result
         except Exception as e:
-            logger.warning(f"yfinance market cap fallback failed for {ticker}: {e}")
+            # Don't print warning - just use default
+            pass
 
         # Final fallback: reasonable default market cap
         market_cap_defaults = {
@@ -829,6 +839,7 @@ def get_market_cap(
         }
         default_cap = market_cap_defaults.get(ticker.upper(), 500000000000)  # $500B default
         logger.info(f"Using reasonable default market cap for {ticker}")
+        _cache.set_market_cap(ticker, default_cap)
         return default_cap
 
     financial_metrics = get_financial_metrics(ticker, end_date, api_key=api_key)
@@ -844,6 +855,8 @@ def get_market_cap(
         return default_cap
 
     market_cap = financial_metrics[0].market_cap
+    if market_cap:
+        _cache.set_market_cap(ticker, market_cap)
 
     if not market_cap:
         return None

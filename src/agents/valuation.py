@@ -39,7 +39,12 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
             api_key=api_key,
         )
         if not financial_metrics:
-            progress.update_status(agent_id, ticker, "Failed: No financial metrics found")
+            progress.update_status(agent_id, ticker, "No real data available")
+            valuation_analysis[ticker] = {
+                "signal": "NEUTRAL",
+                "confidence": 0,
+                "reasoning": "❌ No real valuation metrics data available for this ticker. Analysis cannot be performed."
+            }
             continue
         most_recent_metrics = financial_metrics[0]
 

@@ -27,6 +27,174 @@ from dateutil.relativedelta import relativedelta
 import json
 
 
+def format_sentiment_insights(reasoning: dict) -> str:
+    """Convert sentiment analyst's nested metrics into human-readable Chinese insights."""
+    if not reasoning or not isinstance(reasoning, dict):
+        return ""
+    
+    category_names = {
+        "insider_trading": "👤 内幕交易",
+        "news_sentiment": "📰 新闻情绪",
+        "social_media": "💬 社交媒体",
+        "analyst_ratings": "📋 分析师评级"
+    }
+    
+    insights = []
+    
+    for category_key, category_data in reasoning.items():
+        if category_key == "combined_analysis":
+            continue  # Skip the combined section for now
+            
+        if category_key not in category_names:
+            continue
+            
+        name = category_names[category_key]
+        signal = category_data.get("signal", "neutral").upper()
+        signal_cn = {"BULLISH": "看涨", "BEARISH": "看跌", "NEUTRAL": "中性"}.get(signal, signal)
+        confidence = category_data.get("confidence", 0)
+        metrics = category_data.get("metrics", {})
+        
+        # Generate metric explanations
+        metric_notes = []
+        if category_key == "insider_trading":
+            total = metrics.get("total_trades", 0)
+            bullish = metrics.get("bullish_trades", 0)
+            bearish = metrics.get("bearish_trades", 0)
+            if total > 0:
+                metric_notes.append(f"共{total}笔交易")
+                if bullish > 0:
+                    metric_notes.append(f"买入{bullish}")
+                if bearish > 0:
+                    metric_notes.append(f"卖出{bearish}")
+        
+        elif category_key == "news_sentiment":
+            total = metrics.get("total_articles", 0)
+            bullish = metrics.get("bullish_articles", 0)
+            bearish = metrics.get("bearish_articles", 0)
+            if total > 0:
+                metric_notes.append(f"共{total}篇")
+                metric_notes.append(f"正面{bullish}")
+                metric_notes.append(f"负面{bearish}")
+            else:
+                metric_notes.append("无新闻数据")
+        
+        # Signal color class
+        signal_class = f"signal-{signal}"
+        
+        # Build HTML for this category
+        metrics_html = " · ".join(metric_notes)
+        insights.append(f"""
+            <div style="margin-bottom: 8px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 6px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <span style="font-weight: 600; font-size: 0.8rem;">{name}</span>
+                    <span style="font-weight: 700; font-size: 0.75rem;" class="{signal_class}">{signal_cn} {confidence}%</span>
+                </div>
+                <div style="font-size: 0.7rem; color: #888;">{metrics_html}</div>
+            </div>
+        """)
+    
+    # Add combined analysis summary
+    if "combined_analysis" in reasoning:
+        combined = reasoning["combined_analysis"]
+        determination = combined.get("signal_determination", "")
+        # Translate to Chinese
+        if "Bullish" in determination:
+            determination = "综合信号：看涨"
+        elif "Bearish" in determination:
+            determination = "综合信号：看跌"
+        insights.append(f"""
+            <div style="margin-top: 8px; padding: 8px; background: rgba(124, 58, 237, 0.15); border-radius: 8px; border-left: 3px solid #7c3aed;">
+                <div style="font-size: 0.75rem; color: #a78bfa; font-weight: 600;">🎯 {determination}</div>
+            </div>
+        """)
+    
+    return "\n".join(insights)
+
+
+def format_technical_insights(reasoning: dict) -> str:
+    """Convert technical analyst's nested metrics into human-readable Chinese insights."""
+    if not reasoning or not isinstance(reasoning, dict):
+        return ""
+    
+    # Check if this is the technical analyst nested structure
+    strategy_names = {
+        "trend_following": "📈 趋势跟踪",
+        "mean_reversion": "🔄 均值回归",
+        "momentum": "⚡ 动量分析",
+        "volatility": "📊 波动率",
+        "statistical_arbitrage": "📐 统计套利"
+    }
+    
+    insights = []
+    
+    for strategy_key, strategy_data in reasoning.items():
+        if strategy_key not in strategy_names:
+            continue
+            
+        name = strategy_names[strategy_key]
+        signal = strategy_data.get("signal", "neutral").upper()
+        signal_cn = {"BULLISH": "看涨", "BEARISH": "看跌", "NEUTRAL": "中性"}.get(signal, signal)
+        confidence = strategy_data.get("confidence", 0)
+        metrics = strategy_data.get("metrics", {})
+        
+        # Generate metric explanations
+        metric_notes = []
+        if strategy_key == "trend_following":
+            adx = metrics.get("adx", 0)
+            if adx > 25:
+                metric_notes.append(f"ADX {adx:.1f} (趋势强)")
+            elif adx > 20:
+                metric_notes.append(f"ADX {adx:.1f} (有趋势)")
+            else:
+                metric_notes.append(f"ADX {adx:.1f} (震荡)")
+        
+        elif strategy_key == "mean_reversion":
+            rsi = metrics.get("rsi_14", 50)
+            z_score = metrics.get("z_score", 0)
+            if rsi > 70:
+                metric_notes.append(f"RSI {rsi:.1f} (超买)")
+            elif rsi < 30:
+                metric_notes.append(f"RSI {rsi:.1f} (超卖)")
+            else:
+                metric_notes.append(f"RSI {rsi:.1f} (中性)")
+            if abs(z_score) > 1.5:
+                metric_notes.append(f"Z {z_score:.2f}σ (偏离均值)")
+        
+        elif strategy_key == "momentum":
+            mom_1m = metrics.get("momentum_1m", 0)
+            vol_mom = metrics.get("volume_momentum", 0)
+            if mom_1m > 0.1:
+                metric_notes.append(f"1月动量 +{mom_1m:.1%}")
+            elif mom_1m < -0.1:
+                metric_notes.append(f"1月动量 {mom_1m:.1%}")
+            if vol_mom > 1.2:
+                metric_notes.append(f"放量 x{vol_mom:.1f}")
+        
+        elif strategy_key == "volatility":
+            hv = metrics.get("historical_volatility", 0)
+            if hv > 0.5:
+                metric_notes.append(f"波动率 {hv:.1%} (高波动)")
+            elif hv < 0.2:
+                metric_notes.append(f"波动率 {hv:.1%} (低波动)")
+        
+        # Signal color class
+        signal_class = f"signal-{signal}"
+        
+        # Build HTML for this strategy
+        metrics_html = " · ".join(metric_notes)
+        insights.append(f"""
+            <div style="margin-bottom: 8px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 6px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <span style="font-weight: 600; font-size: 0.8rem;">{name}</span>
+                    <span style="font-weight: 700; font-size: 0.75rem;" class="{signal_class}">{signal_cn} {confidence}%</span>
+                </div>
+                <div style="font-size: 0.7rem; color: #888;">{metrics_html}</div>
+            </div>
+        """)
+    
+    return "\n".join(insights)
+
+
 def generate_html_report(analyst_signals, decisions, timestamp):
     """Generate a beautiful HTML report in Chinese."""
     # Chinese translation helper for signals
@@ -218,15 +386,23 @@ def generate_html_report(analyst_signals, decisions, timestamp):
                 # If it's just a string signal, use defaults
                 signal = signal_data.upper()
                 confidence = 50
-                reasoning = ""
+                reasoning_html = ""
             elif isinstance(signal_data, dict):
                 signal = signal_data.get("signal", "NEUTRAL").upper()
                 confidence = signal_data.get("confidence", 0)
                 reasoning = signal_data.get("reasoning", "")
+                
+                # Check if this is technical or sentiment analysis (has nested strategies)
+                if agent == "technical_analyst_agent" and isinstance(reasoning, dict):
+                    reasoning_html = format_technical_insights(reasoning)
+                elif agent == "sentiment_analyst_agent" and isinstance(reasoning, dict):
+                    reasoning_html = format_sentiment_insights(reasoning)
+                else:
+                    reasoning_html = str(reasoning) if reasoning else ""
             else:
                 signal = "NEUTRAL"
                 confidence = 0
-                reasoning = ""
+                reasoning_html = ""
             
             # Ensure confidence is a number, not a string
             try:
@@ -234,8 +410,13 @@ def generate_html_report(analyst_signals, decisions, timestamp):
             except (ValueError, TypeError):
                 confidence = 0.0
 
+            # Make technical and sentiment analyst cards wider to show all strategies
+            card_style = ""
+            if agent == "technical_analyst_agent" or agent == "sentiment_analyst_agent":
+                card_style = "grid-column: span 2;"
+            
             html_content += f"""
-                <div class="analyst-card">
+                <div class="analyst-card" style="{card_style}">
                     <div class="analyst-name">{agent_name}</div>
                     <div class="analyst-signal">
                         <span class="signal-{signal}">{cn(signal)}</span>
@@ -244,7 +425,7 @@ def generate_html_report(analyst_signals, decisions, timestamp):
                     <div class="confidence-bar confidence-{signal}">
                         <div class="confidence-fill" style="width: {confidence}%"></div>
                     </div>
-                    <div class="analyst-reasoning">{reasoning}</div>
+                    <div class="analyst-reasoning">{reasoning_html}</div>
                 </div>
 """
 
@@ -504,7 +685,8 @@ if __name__ == "__main__":
         model_provider=inputs.model_provider,
         language=inputs.language,
     )
-    print_trading_output(result)
+    # Do NOT print trading output to console - too verbose
+    # print_trading_output(result)
     
     # Save result to file - ALWAYS use project's output directory
     project_root = Path(__file__).parent.parent
@@ -516,17 +698,9 @@ if __name__ == "__main__":
     json_path = output_dir / f"hedge_fund_analysis_{timestamp}.json"
     with open(json_path, "w") as f:
         json.dump(result, f, indent=2, default=str)
-    print(f"\n✅ Full analysis saved to: {json_path}")
+    print(f"✅ JSON analysis saved to: {json_path}")
     
-    # Also save text report
-    text_path = output_dir / f"hedge_fund_analysis_{timestamp}.txt"
-    with open(text_path, "w") as f:
-        import contextlib
-        with contextlib.redirect_stdout(f):
-            print_trading_output(result)
-    print(f"✅ Text report saved to: {text_path}")
-    
-    # Generate beautiful HTML report
+    # Generate beautiful HTML report (ONLY HTML output)
     html_report = generate_html_report(
         result.get("analyst_signals", {}),
         result.get("decisions", {}),

@@ -62,14 +62,14 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
 
 def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
     """Fetch price data from cache first, API only if insufficient cached data."""
-    # Step 1: Check if we already have sufficient cached data for this ticker
-    if _cache.has_sufficient_prices(ticker, start_date, end_date):
-        cached_data = _cache.get_prices(ticker, start_date, end_date)
-        if cached_data:
-            logger.info(f"Using {len(cached_data)} cached price points for {ticker}")
-            return [Price(**price) for price in cached_data]
+    # Step 1: Check if we already have ANY cached data (even partial)
+    # This prevents rate limit issues - prefer cached data over hitting APIs
+    cached_data = _cache.get_prices(ticker, start_date, end_date)
+    if cached_data and len(cached_data) >= 20:  # Just need enough for technical analysis
+        logger.info(f"Using {len(cached_data)} cached price points for {ticker}")
+        return [Price(**price) for price in cached_data]
     
-    # Step 2: Not enough cached data - fetch from API
+    # Step 2: Try financialdatasets.ai API
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
     if financial_api_key:
@@ -82,46 +82,98 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
         response = _make_api_request(url, headers)
         api_success = response.status_code == 200 and not response.json().get("error")
     except Exception as e:
-        logger.warning("Financial Datasets API request failed for %s: %s", ticker, e)
+        logger.info(f"Financial Datasets API request failed for %s: %s", ticker, e)
         api_success = False
 
     # Fallback if API call fails
     if not api_success:
-        # Try yfinance first with rate limit handling
+        # First try Alpha Vantage (proper API, less rate limited)
+        alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+        if alpha_vantage_key:
+            try:
+                import requests
+                from datetime import datetime
+
+                url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={alpha_vantage_key}"
+                response = requests.get(url, timeout=15)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    # Check for rate limit
+                    if "Note" in data and "rate limit" in data["Note"].lower():
+                        logger.info(f"Alpha Vantage rate limit reached for {ticker} - using cached data")
+                        # Return any cached data we have
+                        if cached_data:
+                            return [Price(**price) for price in cached_data]
+                    else:
+                        time_series = data.get("Time Series (Daily)", {})
+
+                        if time_series:
+                            prices = []
+                            sorted_dates = sorted(time_series.keys(), reverse=True)
+
+                            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+                            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+                            for date_str in sorted_dates:
+                                date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                                if start_dt <= date_obj <= end_dt:
+                                    day_data = time_series[date_str]
+                                    prices.append(Price(
+                                        time=date_str,
+                                        ticker=ticker,
+                                        open=float(day_data["1. open"]),
+                                        high=float(day_data["2. high"]),
+                                        low=float(day_data["3. low"]),
+                                        close=float(day_data["4. close"]),
+                                        volume=int(day_data["5. volume"]),
+                                    ))
+
+                            if prices and len(prices) >= 20:
+                                _cache.set_prices(ticker, [p.model_dump() for p in prices])
+                                logger.info(f"Successfully retrieved {len(prices)} price points for {ticker} via Alpha Vantage")
+                                return prices
+            except Exception as e:
+                logger.info(f"Alpha Vantage fallback failed for {ticker}: {e}")
+
+        # Before yfinance - LAST RESORT - easily rate limited
         try:
             import yfinance as yf
             import time
             from requests.exceptions import RequestException
 
-            # Try up to 2 times with delay between retries
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    yf_ticker = yf.Ticker(ticker)
-                    hist = yf_ticker.history(start=start_date, end=end_date)
-                    if not hist.empty:
-                        prices = []
-                        for idx, row in hist.iterrows():
-                            prices.append(Price(
-                                time=idx.strftime("%Y-%m-%d"),
-                                ticker=ticker,
-                                open=float(row["Open"]),
-                                high=float(row["High"]),
-                                low=float(row["Low"]),
-                                close=float(row["Close"]),
-                                volume=int(row["Volume"]),
-                            ))
-                        _cache.set_prices(ticker, [p.model_dump() for p in prices])
-                        logger.info(f"Successfully retrieved {len(prices)} price points for {ticker} via yfinance")
-                        return prices
-                except (yf.exceptions.YFRateLimitError, RequestException) as e:
-                    if attempt < max_retries - 1:
-                        time.sleep(1)  # Wait before retry
-                        continue
-                    raise  # Re-raise on last attempt
-                break  # Success, exit retry loop
+            # Only try ONCE - if rate limited, use cache immediately
+            try:
+                yf_ticker = yf.Ticker(ticker)
+                hist = yf_ticker.history(start=start_date, end=end_date)
+                if not hist.empty:
+                    prices = []
+                    for idx, row in hist.iterrows():
+                        prices.append(Price(
+                            time=idx.strftime("%Y-%m-%d"),
+                            ticker=ticker,
+                            open=float(row["Open"]),
+                            high=float(row["High"]),
+                            low=float(row["Low"]),
+                            close=float(row["Close"]),
+                            volume=int(row["Volume"]),
+                        ))
+                    _cache.set_prices(ticker, [p.model_dump() for p in prices])
+                    logger.info(f"Successfully retrieved {len(prices)} price points for {ticker} via yfinance")
+                    return prices
+            except (yf.exceptions.YFRateLimitError, RequestException):
+                # Rate limited - use any cached data we have
+                if cached_data:
+                    logger.info(f"yfinance rate limited for {ticker} - using {len(cached_data)} cached points")
+                    return [Price(**price) for price in cached_data]
+                raise  # Re-raise if no cache
         except Exception as e:
-            logger.warning(f"yfinance fallback failed for {ticker}: {e}")
+            # If we have ANY cached data, use it instead of falling through to demo
+            if cached_data and len(cached_data) >= 10:
+                logger.info(f"Using {len(cached_data)} existing cached price points for {ticker}")
+                return [Price(**price) for price in cached_data]
+            
+            logger.info(f"yfinance fallback failed for {ticker}: {e}")
 
         # Alternative fallback: direct Yahoo Finance v10 API (more reliable)
         try:
@@ -167,99 +219,9 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
                         logger.info(f"Successfully retrieved {len(prices)} price points for {ticker} via Yahoo Finance API")
                         return prices
         except Exception as e:
-            logger.warning(f"Yahoo Finance direct API fallback failed for {ticker}: {e}")
-            
-        # Alpha Vantage fallback (free API, 25 requests/day)
-        # Get free API key from https://www.alphavantage.co/support/#api-key
-        alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
-        if alpha_vantage_key:
-            try:
-                import requests
-                from datetime import datetime
-                
-                url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={alpha_vantage_key}"
-                response = requests.get(url, timeout=15)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    time_series = data.get("Time Series (Daily)", {})
-                    
-                    if time_series:
-                        prices = []
-                        # Sort dates and filter to requested date range
-                        sorted_dates = sorted(time_series.keys(), reverse=True)
-                        
-                        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
-                        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-                        
-                        for date_str in sorted_dates:
-                            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-                            if start_dt <= date_obj <= end_dt:
-                                day_data = time_series[date_str]
-                                prices.append(Price(
-                                    time=date_str,
-                                    ticker=ticker,
-                                    open=float(day_data["1. open"]),
-                                    high=float(day_data["2. high"]),
-                                    low=float(day_data["3. low"]),
-                                    close=float(day_data["4. close"]),
-                                    volume=int(day_data["5. volume"]),
-                                ))
-                        
-                        if prices:
-                            _cache.set_prices(ticker, [p.model_dump() for p in prices])
-                            logger.info(f"Successfully retrieved {len(prices)} price points for {ticker} via Alpha Vantage")
-                            return prices
-            except Exception as e:
-                logger.warning(f"Alpha Vantage fallback failed for {ticker}: {e}")
-        
-        # Fallback to hardcoded demo data for common tickers
-        demo_prices = {
-            "AAPL": {"price": 170.0, "prev_price": 168.0, "date": "2026-04-30"},
-            "MSFT": {"price": 420.0, "prev_price": 415.0, "date": "2026-04-30"},
-            "GOOGL": {"price": 165.0, "prev_price": 163.0, "date": "2026-04-30"},
-            "AMZN": {"price": 180.0, "prev_price": 178.0, "date": "2026-04-30"},
-            "TSLA": {"price": 195.0, "prev_price": 192.0, "date": "2026-04-30"},
-            "NVDA": {"price": 850.0, "prev_price": 840.0, "date": "2026-04-30"},
-            "META": {"price": 490.0, "prev_price": 485.0, "date": "2026-04-30"},
-            "ORCL": {"price": 125.0, "prev_price": 123.0, "date": "2026-04-30"},
-            "BYND": {"price": 8.5, "prev_price": 8.2, "date": "2026-04-30"},
-        }
-        if ticker.upper() in demo_prices:
-            demo = demo_prices[ticker.upper()]
-            from datetime import datetime, timedelta
-            import random
-            
-            # Generate 30 days of synthetic price data for technical analysis
-            # Start from current price and go back with random walk + slight uptrend
-            end_date_obj = datetime.strptime(demo["date"], "%Y-%m-%d")
-            current_price = demo["price"]
-            
-            prices = []
-            for i in range(30):
-                date = (end_date_obj - timedelta(days=30 - i - 1)).strftime("%Y-%m-%d")
-                # Add random walk with slight uptrend bias
-                if i < 29:  # First 29 days build up to the current price
-                    # Calculate price with some volatility
-                    target_price_for_day = demo["prev_price"] + (demo["price"] - demo["prev_price"]) * (i / 29)
-                    random_offset = random.uniform(-2.0, 2.0) * (demo["price"] / 100)  # +/- 2%
-                    day_price = target_price_for_day + random_offset
-                else:
-                    day_price = current_price
-                
-                prices.append(Price(
-                    time=date,
-                    ticker=ticker,
-                    open=day_price * 0.995,
-                    high=day_price * 1.015,
-                    low=day_price * 0.985,
-                    close=day_price,
-                    volume=random.randint(5000000, 20000000),
-                ))
-            
-            _cache.set_prices(ticker, [p.model_dump() for p in prices])
-            logger.info(f"Generated {len(prices)} synthetic price points for {ticker}")
-            return prices
+            logger.info(f"Yahoo Finance direct API fallback failed for {ticker}: {e}")
+
+        # NO DEMO DATA - return empty list when no real data found
         return []
 
     # Parse response with Pydantic model
@@ -267,7 +229,7 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
         price_response = PriceResponse(**response.json())
         prices = price_response.prices
     except Exception as e:
-        logger.warning("Failed to parse price response for %s: %s", ticker, e)
+        logger.info("Failed to parse price response for %s: %s", ticker, e)
         return []
 
     if not prices:
@@ -304,7 +266,68 @@ def get_financial_metrics(
     response = _make_api_request(url, headers)
     api_success = response.status_code == 200 and not response.json().get("error")
 
-    # Fallback to yfinance if API fails
+    # Fallback to Alpha Vantage first (proper API, predictable rate limits)
+    alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+    if not api_success and alpha_vantage_key:
+        try:
+            import requests
+            from datetime import datetime
+
+            url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={alpha_vantage_key}"
+            av_response = requests.get(url, timeout=15)
+
+            if av_response.status_code == 200:
+                data = av_response.json()
+                # Check for rate limit
+                if "Information" in data and "rate limit" in data["Information"].lower():
+                    logger.info(f"Alpha Vantage rate limit reached for financial metrics - {ticker}")
+                elif data and "Symbol" in data:
+                    # Build financial metrics from Alpha Vantage
+                    report_date = datetime.now().strftime("%Y-%m-%d")
+
+                    def safe_float(key, default=0):
+                        val = data.get(key, default)
+                        try:
+                            return float(val) if val and val != "None" else default
+                        except (ValueError, TypeError):
+                            return default
+
+                    metrics = FinancialMetrics(
+                        ticker=ticker,
+                        report_period=report_date,
+                        period=period,
+                        currency="USD",
+                        market_cap=safe_float("MarketCapitalization"),
+                        enterprise_value=safe_float("MarketCapitalization") * 1.1,  # Approximate
+                        price_to_earnings_ratio=safe_float("PERatio"),
+                        price_to_book_ratio=safe_float("PriceToBookRatio"),
+                        price_to_sales_ratio=safe_float("PriceToSalesRatioTTM"),
+                        enterprise_value_to_ebitda_ratio=safe_float("EVToEBITDA"),
+                        enterprise_value_to_revenue_ratio=safe_float("EVToRevenue"),
+                        peg_ratio=safe_float("PEGRatio"),
+                        gross_margin=safe_float("GrossProfitTTM") / safe_float("RevenueTTM", 1) if safe_float("RevenueTTM") > 0 else 0,
+                        operating_margin=safe_float("OperatingMarginTTM"),
+                        net_margin=safe_float("ProfitMargin"),
+                        return_on_equity=safe_float("ReturnOnEquityTTM"),
+                        return_on_assets=safe_float("ReturnOnAssetsTTM"),
+                        revenue_growth=safe_float("RevenueGrowthYOY"),
+                        earnings_growth=safe_float("EarningsGrowthYOY"),
+                        debt_to_equity=safe_float("DebtToEquityRatio"),
+                        current_ratio=safe_float("CurrentRatio"),
+                        quick_ratio=safe_float("QuickRatio"),
+                        book_value_per_share=safe_float("BookValue"),
+                        earnings_per_share=safe_float("EPS"),
+                        beta=safe_float("Beta"),
+                    )
+
+                    financial_metrics = [metrics]
+                    _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
+                    logger.info(f"Successfully retrieved financial metrics for {ticker} via Alpha Vantage")
+                    return financial_metrics
+        except Exception as e:
+            logger.info(f"Alpha Vantage financial metrics fallback failed for {ticker}: {e}")
+
+    # Last resort: try yfinance
     if not api_success:
         try:
             import yfinance as yf
@@ -374,79 +397,8 @@ def get_financial_metrics(
         except Exception as e:
             logger.info(f"yfinance financial metrics fallback failed for {ticker}: {e}")
 
-        # Final fallback: reasonable default financial metrics for common tickers
-        demo_metrics = {
-            "AAPL": {"market_cap": 2800000000000, "price_to_earnings_ratio": 28, "gross_margin": 0.43, "operating_margin": 0.30, "net_margin": 0.25, "return_on_equity": 0.45, "revenue_growth": 0.08, "debt_to_equity": 1.8, "current_ratio": 1.0},
-            "MSFT": {"market_cap": 3200000000000, "price_to_earnings_ratio": 35, "gross_margin": 0.68, "operating_margin": 0.42, "net_margin": 0.35, "return_on_equity": 0.38, "revenue_growth": 0.12, "debt_to_equity": 0.4, "current_ratio": 1.8},
-            "GOOGL": {"market_cap": 2100000000000, "price_to_earnings_ratio": 25, "gross_margin": 0.55, "operating_margin": 0.30, "net_margin": 0.26, "return_on_equity": 0.25, "revenue_growth": 0.10, "debt_to_equity": 0.1, "current_ratio": 2.2},
-            "AMZN": {"market_cap": 2000000000000, "price_to_earnings_ratio": 42, "gross_margin": 0.48, "operating_margin": 0.08, "net_margin": 0.06, "return_on_equity": 0.15, "revenue_growth": 0.12, "debt_to_equity": 0.6, "current_ratio": 0.9},
-            "TSLA": {"market_cap": 550000000000, "price_to_earnings_ratio": 75, "gross_margin": 0.18, "operating_margin": 0.08, "net_margin": 0.05, "return_on_equity": 0.20, "revenue_growth": 0.03, "debt_to_equity": 0.2, "current_ratio": 1.5},
-            "NVDA": {"market_cap": 3200000000000, "price_to_earnings_ratio": 68, "gross_margin": 0.75, "operating_margin": 0.55, "net_margin": 0.50, "return_on_equity": 0.55, "revenue_growth": 2.5, "debt_to_equity": 0.05, "current_ratio": 3.5},
-            "META": {"market_cap": 1400000000000, "price_to_earnings_ratio": 32, "gross_margin": 0.80, "operating_margin": 0.40, "net_margin": 0.32, "return_on_equity": 0.32, "revenue_growth": 0.25, "debt_to_equity": 0.3, "current_ratio": 2.8},
-            "ORCL": {"market_cap": 520000000000, "price_to_earnings_ratio": 38, "gross_margin": 0.72, "operating_margin": 0.35, "net_margin": 0.28, "return_on_equity": 0.38, "revenue_growth": 0.07, "debt_to_equity": 1.2, "current_ratio": 0.8},
-        }
-
-        if ticker.upper() in demo_metrics:
-            from datetime import datetime, timedelta
-            demo = demo_metrics[ticker.upper()]
-            financial_metrics = []
-            
-            # Generate 10 periods of historical data
-            for period_idx in range(min(limit, 10)):
-                report_date = (datetime.now() - timedelta(days=90 * period_idx)).strftime("%Y-%m-%d")
-                variation = 1 - (period_idx * 0.02)  # Slight variation per period
-                
-                metrics = FinancialMetrics(
-                    ticker=ticker,
-                    report_period=report_date,
-                    period=period,
-                    currency="USD",
-                    market_cap=demo["market_cap"] * variation,
-                    enterprise_value=demo["market_cap"] * 1.1 * variation,
-                    price_to_earnings_ratio=demo["price_to_earnings_ratio"] * variation,
-                    price_to_book_ratio=8.0 * variation,
-                    price_to_sales_ratio=8.0 * variation,
-                    enterprise_value_to_ebitda_ratio=25.0,
-                    enterprise_value_to_revenue_ratio=10.0,
-                    free_cash_flow_yield=0.04,
-                    peg_ratio=1.5,
-                    gross_margin=demo["gross_margin"] * variation,
-                    operating_margin=demo["operating_margin"] * variation,
-                    net_margin=demo["net_margin"] * variation,
-                    return_on_equity=demo["return_on_equity"] * variation,
-                    return_on_assets=demo["return_on_equity"] * 0.4 * variation,
-                    return_on_invested_capital=0.15 * variation,
-                    asset_turnover=0.8 * variation,
-                    inventory_turnover=10.0,
-                    receivables_turnover=6.0,
-                    days_sales_outstanding=60.0,
-                    operating_cycle=70.0,
-                    working_capital_turnover=2.0,
-                    current_ratio=demo["current_ratio"] * variation,
-                    quick_ratio=demo["current_ratio"] * 0.8 * variation,
-                    cash_ratio=0.3,
-                    operating_cash_flow_ratio=0.25,
-                    debt_to_equity=demo["debt_to_equity"] / variation,
-                    debt_to_assets=0.3,
-                    interest_coverage=15.0,
-                    revenue_growth=demo["revenue_growth"] * variation,
-                    earnings_growth=demo["revenue_growth"] * 1.2 * variation,
-                    book_value_growth=0.05,
-                    earnings_per_share_growth=0.10,
-                    free_cash_flow_growth=0.08,
-                    operating_income_growth=demo["revenue_growth"] * 1.1 * variation,
-                    ebitda_growth=0.09,
-                    payout_ratio=0.30,
-                    earnings_per_share=5.0 * variation,
-                    book_value_per_share=20.0 * variation,
-                    free_cash_flow_per_share=4.0 * variation,
-                )
-                financial_metrics.append(metrics)
-            
-            _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
-            logger.info(f"Using reasonable default financial metrics for {ticker} ({len(financial_metrics)} periods)")
-            return financial_metrics
-
+        # NO DEMO DATA - Return empty list if no real data found
+        logger.info(f"No real financial metrics data available for {ticker}")
         return []
 
     # Parse response with Pydantic model
@@ -454,7 +406,7 @@ def get_financial_metrics(
         metrics_response = FinancialMetricsResponse(**response.json())
         financial_metrics = metrics_response.financial_metrics
     except Exception as e:
-        logger.warning("Failed to parse financial metrics response for %s: %s", ticker, e)
+        logger.info("Failed to parse financial metrics response for %s: %s", ticker, e)
         return []
 
     if not financial_metrics:
@@ -493,89 +445,7 @@ def search_line_items(
     api_success = response.status_code == 200 and not response.json().get("error")
 
     if not api_success:
-        # Fallback: return reasonable default values for common tickers with 10 periods of history
-        from datetime import datetime, timedelta
-        
-        # Revenue and profitability defaults for major tickers (in billions)
-        revenue_defaults = {
-            "AAPL": 385, "MSFT": 225, "GOOGL": 310, "AMZN": 575,
-            "TSLA": 95, "NVDA": 80, "META": 140, "ORCL": 52
-        }
-        
-        ticker_upper = ticker.upper()
-        revenue_billion = revenue_defaults.get(ticker_upper, 50)  # Default $50B revenue
-        
-        results = []
-        # Generate 10 periods of historical data (backwards from today)
-        for period_idx in range(min(limit, 10)):
-            report_date = (datetime.now() - timedelta(days=90 * period_idx)).strftime("%Y-%m-%d")
-            
-            # Each older period has slightly lower revenue (simulating growth)
-            growth_factor = 1 - (period_idx * 0.03)  # 3% decline per older period
-            base_revenue = revenue_billion * growth_factor * 1e9
-            
-            # Build all field values for this period
-            period_fields = {}
-            for item in line_items:
-                item_lower = item.lower()
-                
-                if "revenue" in item_lower or "sales" in item_lower:
-                    period_fields[item] = base_revenue
-                elif "net_income" in item_lower or "netincome" in item_lower:
-                    period_fields[item] = base_revenue * 0.18  # 18% margin
-                elif "ebitda" in item_lower:
-                    period_fields[item] = base_revenue * 0.25  # 25% margin
-                elif "ebit" in item_lower:
-                    period_fields[item] = base_revenue * 0.22  # 22% margin
-                elif "gross_profit" in item_lower:
-                    period_fields[item] = base_revenue * 0.40  # 40% margin
-                elif "operating_income" in item_lower:
-                    period_fields[item] = base_revenue * 0.20  # 20% margin
-                elif "total_assets" in item_lower:
-                    period_fields[item] = base_revenue * 2.5
-                elif "total_liabilities" in item_lower:
-                    period_fields[item] = base_revenue * 1.2
-                elif "shareholders_equity" in item_lower:
-                    period_fields[item] = base_revenue * 1.3
-                elif "total_debt" in item_lower:
-                    period_fields[item] = base_revenue * 0.5
-                elif "cash" in item_lower:
-                    period_fields[item] = base_revenue * 0.3
-                elif "working_capital" in item_lower:
-                    period_fields[item] = base_revenue * 0.15
-                elif "interest" in item_lower:
-                    period_fields[item] = base_revenue * 0.02  # Interest expense
-                elif "research" in item_lower or "rnd" in item_lower:
-                    period_fields[item] = base_revenue * 0.10  # 10% for R&D
-                elif "capital_expenditure" in item_lower:
-                    period_fields[item] = base_revenue * 0.05  # 5% CapEx
-                elif "depreciation" in item_lower or "amortization" in item_lower:
-                    period_fields[item] = base_revenue * 0.04
-                elif "outstanding_shares" in item_lower:
-                    period_fields[item] = (base_revenue / 1e9) * 1000000  # ~1B shares
-                elif "dividends" in item_lower:
-                    period_fields[item] = base_revenue * 0.02  # 2% dividend
-                elif "issuance" in item_lower or "purchase" in item_lower or "equity_shares" in item_lower:
-                    period_fields[item] = -base_revenue * 0.03  # Net buybacks (negative)
-                elif "free_cash_flow" in item_lower:
-                    period_fields[item] = base_revenue * 0.15  # 15% FCF margin
-                elif "eps" in item_lower:
-                    period_fields[item] = 5.0 * growth_factor  # EPS with slight trend
-                else:
-                    period_fields[item] = base_revenue * 0.1  # Default
-            
-            # Create one LineItem per period with ALL fields
-            results.append(LineItem(
-                ticker=ticker,
-                report_period=report_date,
-                period=period,
-                currency="USD",
-                **period_fields
-            ))
-        
-        if results:
-            logger.info(f"Using reasonable default line items for {ticker} ({len(results)} periods)")
-            return results[:limit]
+        # NO DEMO DATA - return empty list when no real data found
         return []
 
     try:
@@ -583,7 +453,7 @@ def search_line_items(
         response_model = LineItemResponse(**data)
         search_results = response_model.search_results
     except Exception as e:
-        logger.warning("Failed to parse line items response for %s: %s", ticker, e)
+        logger.info("Failed to parse line items response for %s: %s", ticker, e)
         return []
     if not search_results:
         return []
@@ -631,7 +501,7 @@ def get_insider_trades(
             response_model = InsiderTradeResponse(**data)
             insider_trades = response_model.insider_trades
         except Exception as e:
-            logger.warning("Failed to parse insider trades response for %s: %s", ticker, e)
+            logger.info("Failed to parse insider trades response for %s: %s", ticker, e)
             break
 
         if not insider_trades:
@@ -650,29 +520,11 @@ def get_insider_trades(
         if current_end_date <= start_date:
             break
 
-    # Fallback: return reasonable dummy insider trades if API failed
+    # NO DEMO DATA - return empty list when no real data found
     if not all_trades:
-        from datetime import datetime, timedelta
-        all_trades = [
-            InsiderTrade(
-                ticker=ticker,
-                issuer=ticker,
-                name="Executive, CEO",
-                title="Chief Executive Officer",
-                is_board_director=True,
-                filing_date=(datetime.now() - timedelta(days=i*5)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                transaction_date=(datetime.now() - timedelta(days=i*5+2)).strftime("%Y-%m-%d"),
-                transaction_shares=10000.0,
-                transaction_price_per_share=120.0 + i * 2,
-                transaction_value=1200000.0 + i * 20000,
-                shares_owned_before_transaction=100000.0 - i * 5000,
-                shares_owned_after_transaction=110000.0 - i * 5000,
-                security_title="Common Stock",
-            ) for i in range(min(limit, 5))
-        ]
-        logger.info(f"Using reasonable default insider trades for {ticker}")
-
-    # Cache the results using the comprehensive cache key
+        return []
+    
+    # Only cache REAL insider trades data
     _cache.set_insider_trades(ticker, [trade.model_dump() for trade in all_trades])
     return all_trades
 
@@ -685,12 +537,12 @@ def get_company_news(
     api_key: str = None,
 ) -> list[CompanyNews]:
     """Fetch company news from cache first, API only if insufficient cached data."""
-    # Step 1: Check if we already have sufficient cached news
-    if start_date and _cache.has_sufficient_company_news(ticker, start_date, end_date, min_count=limit):
-        cached_data = _cache.get_company_news(ticker, start_date, end_date)
-        if cached_data and len(cached_data) >= limit:
-            logger.info(f"Using {len(cached_data)} cached news articles for {ticker}")
-            return [CompanyNews(**news) for news in cached_data[:limit]]
+    # Step 1: Check if we already have ANY cached news (even partial)
+    # Prefer cached data over hitting APIs and getting rate limited
+    cached_data = _cache.get_company_news(ticker, start_date or "2020-01-01", end_date)
+    if cached_data and len(cached_data) >= limit:
+        logger.info(f"Using {len(cached_data)} cached news articles for {ticker}")
+        return [CompanyNews(**news) for news in cached_data[:limit]]
     
     # Step 2: Not enough cached data - fetch from API
     headers = {}
@@ -716,7 +568,7 @@ def get_company_news(
             response_model = CompanyNewsResponse(**data)
             company_news = response_model.news
         except Exception as e:
-            logger.warning("Failed to parse company news response for %s: %s", ticker, e)
+            logger.info("Failed to parse company news response for %s: %s", ticker, e)
             break
 
         if not company_news:
@@ -735,7 +587,54 @@ def get_company_news(
         if current_end_date <= start_date:
             break
 
-    # Fallback: try yfinance for real news if API failed
+    # Try Alpha Vantage for news - MORE RELIABLE than yfinance!
+    # Alpha Vantage NEWS_SENTIMENT API provides pre-analyzed sentiment
+    alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+    if not all_news and alpha_vantage_key:
+        try:
+            import requests
+
+            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={alpha_vantage_key}&limit={min(limit, 50)}"
+            response = requests.get(url, timeout=15)
+
+            if response.status_code == 200:
+                data = response.json()
+                if "Information" in data and "rate limit" in data["Information"].lower():
+                    logger.info(f"Alpha Vantage rate limit reached for news - will use cached data")
+                else:
+                    feed = data.get("feed", [])
+                    if feed and len(feed) > 0:
+                        for item in feed:
+                            # Map Alpha Vantage sentiment to our format
+                            av_tickers = item.get("ticker_sentiment", [])
+                            relevant_sentiment = None
+                            for t in av_tickers:
+                                if t.get("ticker", "").upper() == ticker.upper():
+                                    relevant_sentiment = t
+                                    break
+
+                            sentiment = "neutral"
+                            if relevant_sentiment:
+                                score = float(relevant_sentiment.get("ticker_sentiment_score", 0))
+                                if score > 0.15:
+                                    sentiment = "positive"
+                                elif score < -0.15:
+                                    sentiment = "negative"
+
+                            all_news.append(CompanyNews(
+                                ticker=ticker,
+                                title=item.get("title", ""),
+                                source=item.get("source", "Alpha Vantage"),
+                                date=item.get("time_published", "").replace(" ", "T") + "Z",
+                                url=item.get("url", ""),
+                                tickers=[t.get("ticker", "") for t in av_tickers],
+                                sentiment=sentiment,  # Pre-analyzed by Alpha Vantage!
+                            ))
+                        logger.info(f"Successfully retrieved {len(feed)} news articles for {ticker} via Alpha Vantage")
+        except Exception as e:
+            logger.info(f"Alpha Vantage news fallback failed for {ticker}: {e}")
+
+    # Fallback: try yfinance for real news if API failed (last resort - easily rate limited)
     if not all_news:
         try:
             import yfinance as yf
@@ -760,29 +659,19 @@ def get_company_news(
         except Exception as e:
             logger.info(f"yfinance news fallback failed for {ticker}: {e}")
     
-    # Fallback: return reasonable dummy news articles if all real sources failed
+    # Before falling back - check if we have ANY cached news
+    # Even if not "sufficient", real cached news is better than nothing
     if not all_news:
-        from datetime import datetime, timedelta
-        sample_news = [
-            f"{ticker} reports strong quarterly results exceeding analyst expectations",
-            f"Tech sector shows resilience as {ticker} announces new product roadmap",
-            f"Market analysts upgrade {ticker} rating following strategic investments",
-            f"{ticker} partners with industry leaders on AI and cloud computing initiatives",
-            f"Investor sentiment improves for {ticker} as macroeconomic headwinds ease",
-        ]
-        all_news = [
-            CompanyNews(
-                ticker=ticker,
-                title=sample_news[i % len(sample_news)],
-                source="Market Analysis",
-                date=(datetime.now() - timedelta(days=i*3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                url=f"https://example.com/news/{ticker}/{i}",
-                tickers=[ticker],
-            ) for i in range(min(limit, 5))
-        ]
-        logger.info(f"Using reasonable default company news for {ticker}")
-
-    # Cache the results (persisted to disk)
+        existing_cached = _cache.get_company_news(ticker, start_date, end_date)
+        if existing_cached and len(existing_cached) > 0:
+            logger.info(f"Rate limited, using {len(existing_cached)} existing cached news articles for {ticker}")
+            return [CompanyNews(**news) for news in existing_cached]
+    
+    # NO DEMO DATA - return empty list when no real data found
+    if not all_news:
+        return []
+    
+    # Only cache REAL news (persisted to disk)
     _cache.set_company_news(ticker, [news.model_dump() for news in all_news])
     return all_news
 
@@ -815,7 +704,7 @@ def get_market_cap(
                     _cache.set_market_cap(ticker, response_model.company_facts.market_cap)
                     return response_model.company_facts.market_cap
             except Exception as e:
-                logger.warning(f"Failed to parse company facts for {ticker}: {e}")
+                logger.info(f"Failed to parse company facts for {ticker}: {e}")
 
         # Fallback to yfinance info for market cap
         try:
@@ -828,40 +717,19 @@ def get_market_cap(
                 _cache.set_market_cap(ticker, result)
                 return result
         except Exception as e:
-            # Don't print warning - just use default
+            # Don't print warning - just continue
             pass
 
-        # Final fallback: reasonable default market cap
-        market_cap_defaults = {
-            "AAPL": 2800000000000, "MSFT": 3200000000000, "GOOGL": 2100000000000,
-            "AMZN": 2000000000000, "TSLA": 550000000000, "NVDA": 3200000000000,
-            "META": 1400000000000, "ORCL": 520000000000
-        }
-        default_cap = market_cap_defaults.get(ticker.upper(), 500000000000)  # $500B default
-        logger.info(f"Using reasonable default market cap for {ticker}")
-        _cache.set_market_cap(ticker, default_cap)
-        return default_cap
-
+    # Fallback: try to get market cap from financial metrics
     financial_metrics = get_financial_metrics(ticker, end_date, api_key=api_key)
-    if not financial_metrics:
-        # Fallback if no metrics found
-        market_cap_defaults = {
-            "AAPL": 2800000000000, "MSFT": 3200000000000, "GOOGL": 2100000000000,
-            "AMZN": 2000000000000, "TSLA": 550000000000, "NVDA": 3200000000000,
-            "META": 1400000000000, "ORCL": 520000000000
-        }
-        default_cap = market_cap_defaults.get(ticker.upper(), 500000000000)
-        logger.info(f"Using reasonable default market cap for {ticker}")
-        return default_cap
+    if financial_metrics:
+        market_cap = financial_metrics[0].market_cap
+        if market_cap:
+            _cache.set_market_cap(ticker, market_cap)
+            return market_cap
 
-    market_cap = financial_metrics[0].market_cap
-    if market_cap:
-        _cache.set_market_cap(ticker, market_cap)
-
-    if not market_cap:
-        return None
-
-    return market_cap
+    # NO DEMO DATA - return None when no real data found
+    return None
 
 
 def prices_to_df(prices: list[Price]) -> pd.DataFrame:

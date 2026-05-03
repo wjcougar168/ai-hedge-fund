@@ -30,7 +30,13 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
         )
 
         if not financial_metrics:
-            progress.update_status(agent_id, ticker, "Failed: No financial metrics found")
+            progress.update_status(agent_id, ticker, "No real data available")
+            # Add a clear signal that no real data was available
+            fundamental_analysis[ticker] = {
+                "signal": "NEUTRAL",
+                "confidence": 0,
+                "reasoning": "❌ No real financial metrics data available for this ticker. Analysis cannot be performed."
+            }
             continue
 
         # Pull the most recent financial metrics

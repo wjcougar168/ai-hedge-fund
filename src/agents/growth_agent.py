@@ -37,7 +37,12 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
             api_key=api_key,
         )
         if not financial_metrics or len(financial_metrics) < 4:
-            progress.update_status(agent_id, ticker, "Failed: Not enough financial metrics")
+            progress.update_status(agent_id, ticker, "No real data available")
+            growth_analysis[ticker] = {
+                "signal": "NEUTRAL",
+                "confidence": 0,
+                "reasoning": "❌ No real growth metrics data available for this ticker. Analysis cannot be performed."
+            }
             continue
         
         most_recent_metrics = financial_metrics[0]

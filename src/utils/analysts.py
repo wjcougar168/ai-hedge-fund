@@ -18,7 +18,6 @@ from src.agents.warren_buffett import warren_buffett_agent
 from src.agents.rakesh_jhunjhunwala import rakesh_jhunjhunwala_agent
 from src.agents.mohnish_pabrai import mohnish_pabrai_agent
 from src.agents.nassim_taleb import nassim_taleb_agent
-from src.agents.news_sentiment import news_sentiment_agent
 from src.agents.growth_agent import growth_analyst_agent
 
 # Define analyst configuration - single source of truth
@@ -150,14 +149,6 @@ ANALYST_CONFIG = {
         "agent_func": growth_analyst_agent,
         "type": "analyst",
         "order": 15,
-    },
-    "news_sentiment_analyst": {
-        "display_name": "News Sentiment Analyst",
-        "description": "News Sentiment Specialist",
-        "investing_style": "Analyzes news sentiment to predict market movements and identify opportunities through news analysis.",
-        "agent_func": news_sentiment_agent,
-        "type": "analyst",
-        "order": 16,
     },
     "sentiment_analyst": {
         "display_name": "Sentiment Analyst",

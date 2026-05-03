@@ -385,6 +385,29 @@ def get_financial_metrics(
                 financial_metrics.append(metrics)
 
             if len(financial_metrics) >= 1:
+                # Supplement with growth metrics from Finnhub (free)
+                finnhub_key = os.environ.get("FINNHUB_API_KEY")
+                if finnhub_key:
+                    try:
+                        import requests
+                        url = f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}&metric=growth&token={finnhub_key}"
+                        fh_response = requests.get(url, timeout=15)
+                        if fh_response.status_code == 200:
+                            fh_data = fh_response.json()
+                            if fh_data and "metric" in fh_data:
+                                metric = fh_data["metric"]
+                                # Update the most recent metric with TTM growth rates
+                                m = financial_metrics[0]
+                                if m.revenue_growth is None and metric.get("revenueGrowthTTMYoy") is not None:
+                                    m.revenue_growth = metric["revenueGrowthTTMYoy"] / 100
+                                if m.earnings_growth is None and metric.get("epsGrowthTTMYoy") is not None:
+                                    m.earnings_growth = metric["epsGrowthTTMYoy"] / 100
+                                if m.book_value_growth is None and metric.get("bookValueShareGrowth5Y") is not None:
+                                    m.book_value_growth = metric["bookValueShareGrowth5Y"] / 100
+                                logger.info(f"Supplement {ticker} financial metrics with Finnhub growth data")
+                    except Exception as e:
+                        logger.info(f"Finnhub growth supplement failed for {ticker}: {e}")
+                
                 _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
                 logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via yfinance")
                 return financial_metrics
@@ -522,6 +545,27 @@ def get_financial_metrics(
                         financial_metrics.append(metrics)
 
                     if len(financial_metrics) >= 1:
+                        # Supplement with growth metrics from Finnhub metric endpoint (free)
+                        try:
+                            import requests
+                            url = f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}&metric=growth&token={finnhub_key}"
+                            fh_response = requests.get(url, timeout=15)
+                            if fh_response.status_code == 200:
+                                fh_data = fh_response.json()
+                                if fh_data and "metric" in fh_data:
+                                    metric = fh_data["metric"]
+                                    # Update the most recent metric with TTM growth rates
+                                    m = financial_metrics[0]
+                                    if m.revenue_growth is None and metric.get("revenueGrowthTTMYoy") is not None:
+                                        m.revenue_growth = metric["revenueGrowthTTMYoy"] / 100
+                                    if m.earnings_growth is None and metric.get("epsGrowthTTMYoy") is not None:
+                                        m.earnings_growth = metric["epsGrowthTTMYoy"] / 100
+                                    if m.book_value_growth is None and metric.get("bookValueShareGrowth5Y") is not None:
+                                        m.book_value_growth = metric["bookValueShareGrowth5Y"] / 100
+                                    logger.info(f"Supplement {ticker} financial metrics with Finnhub growth data")
+                        except Exception as e:
+                            logger.info(f"Finnhub growth supplement failed for {ticker}: {e}")
+                        
                         _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
                         logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via Finnhub")
                         api_success = True
@@ -624,6 +668,29 @@ def get_financial_metrics(
                         financial_metrics.append(metrics)
 
                     if len(financial_metrics) >= 1:
+                        # Supplement with growth metrics from Finnhub (free)
+                        finnhub_key = os.environ.get("FINNHUB_API_KEY")
+                        if finnhub_key:
+                            try:
+                                import requests
+                                url = f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}&metric=growth&token={finnhub_key}"
+                                fh_response = requests.get(url, timeout=15)
+                                if fh_response.status_code == 200:
+                                    fh_data = fh_response.json()
+                                    if fh_data and "metric" in fh_data:
+                                        metric = fh_data["metric"]
+                                        # Update the most recent metric with TTM growth rates
+                                        m = financial_metrics[0]
+                                        if m.revenue_growth is None and metric.get("revenueGrowthTTMYoy") is not None:
+                                            m.revenue_growth = metric["revenueGrowthTTMYoy"] / 100
+                                        if m.earnings_growth is None and metric.get("epsGrowthTTMYoy") is not None:
+                                            m.earnings_growth = metric["epsGrowthTTMYoy"] / 100
+                                        if m.book_value_growth is None and metric.get("bookValueShareGrowth5Y") is not None:
+                                            m.book_value_growth = metric["bookValueShareGrowth5Y"] / 100
+                                        logger.info(f"Supplement {ticker} financial metrics with Finnhub growth data")
+                            except Exception as e:
+                                logger.info(f"Finnhub growth supplement failed for {ticker}: {e}")
+                        
                         _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
                         logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via Alpha Vantage")
                         return financial_metrics
@@ -689,11 +756,11 @@ def get_insider_trades(
     api_key: str = None,
 ) -> list[InsiderTrade]:
     """Fetch insider trades from cache or API."""
-    # Create a cache key that includes all parameters to ensure exact matches
-    cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
-    
-    # Check cache first - simple exact match
-    if cached_data := _cache.get_insider_trades(cache_key):
+    # Step 1: Check if we have sufficient AND fresh cached insider trades
+    # Insider trades expire after 24 hours
+    if _cache.has_sufficient_insider_trades(ticker):
+        cached_data = _cache.get_insider_trades(ticker)
+        logger.info(f"Using {len(cached_data)} fresh cached insider trades for {ticker}")
         return [InsiderTrade(**trade) for trade in cached_data]
 
     # If not in cache, fetch from API
@@ -756,11 +823,11 @@ def get_company_news(
     api_key: str = None,
 ) -> list[CompanyNews]:
     """Fetch company news from cache first, API only if insufficient cached data."""
-    # Step 1: Check if we already have ANY cached news (even partial)
-    # Prefer cached data over hitting APIs and getting rate limited
-    cached_data = _cache.get_company_news(ticker, start_date or "2020-01-01", end_date)
-    if cached_data and len(cached_data) >= limit:
-        logger.info(f"Using {len(cached_data)} cached news articles for {ticker}")
+    # Step 1: Check if we have sufficient AND fresh cached news
+    # News expires after 12 hours - always refresh stale cache
+    if _cache.has_sufficient_company_news(ticker, start_date or "2020-01-01", end_date, min_count=limit):
+        cached_data = _cache.get_company_news(ticker, start_date or "2020-01-01", end_date)
+        logger.info(f"Using {len(cached_data)} fresh cached news articles for {ticker}")
         return [CompanyNews(**news) for news in cached_data[:limit]]
     
     # Step 2: Not enough cached data - fetch from API
@@ -853,6 +920,38 @@ def get_company_news(
         except Exception as e:
             logger.info(f"Alpha Vantage news fallback failed for {ticker}: {e}")
 
+    # Fallback: try Finnhub - 60 requests/minute free tier!
+    finnhub_key = os.environ.get("FINNHUB_API_KEY")
+    if not all_news and finnhub_key:
+        try:
+            import requests
+            from datetime import datetime, timedelta
+            
+            # Calculate start date (14 days ago)
+            start_dt = datetime.now() - timedelta(days=14)
+            finnhub_start = start_dt.strftime("%Y-%m-%d")
+            finnhub_end = end_date
+            
+            url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={finnhub_start}&to={finnhub_end}&token={finnhub_key}"
+            response = requests.get(url, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list) and len(data) > 0:
+                    all_news = []
+                    for item in data[:limit]:
+                        all_news.append(CompanyNews(
+                            ticker=ticker,
+                            title=item.get("headline", ""),
+                            source=item.get("source", "Finnhub"),
+                            date=datetime.fromtimestamp(item.get("datetime", 0)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            url=item.get("url", ""),
+                            tickers=[ticker],
+                        ))
+                    logger.info(f"Successfully retrieved {len(all_news)} news articles for {ticker} via Finnhub")
+        except Exception as e:
+            logger.info(f"Finnhub news fallback failed for {ticker}: {e}")
+
     # Fallback: try yfinance for real news if API failed (last resort - easily rate limited)
     if not all_news:
         try:
@@ -877,6 +976,25 @@ def get_company_news(
                     logger.info(f"Successfully retrieved {len(all_news)} real news articles for {ticker} via yfinance")
         except Exception as e:
             logger.info(f"yfinance news fallback failed for {ticker}: {e}")
+
+    # Add simple keyword-based sentiment analysis for news without pre-analyzed sentiment
+    # This ensures news from Finnhub/yfinance is not dropped by .dropna() in sentiment_analyst
+    if all_news:
+        positive_keywords = {"growth", "profit", "beat", "exceed", "success", "upgrade", "bullish", "gain", "increase", "surge", "rally", "record", "strong", "boom", "positive", "surpass", "raise"}
+        negative_keywords = {"loss", "miss", "downgrade", "bearish", "drop", "fall", "weak", "crash", "slump", "lawsuit", "fraud", "decline", "investigation", "recall", "negative", "cut", "lower"}
+        
+        for news in all_news:
+            if news.sentiment is None:
+                title_lower = (news.title or "").lower()
+                positive_count = sum(1 for word in positive_keywords if word in title_lower)
+                negative_count = sum(1 for word in negative_keywords if word in title_lower)
+                
+                if positive_count > negative_count:
+                    news.sentiment = "positive"
+                elif negative_count > positive_count:
+                    news.sentiment = "negative"
+                else:
+                    news.sentiment = "neutral"
     
     # Before falling back - check if we have ANY cached news
     # Even if not "sufficient", real cached news is better than nothing

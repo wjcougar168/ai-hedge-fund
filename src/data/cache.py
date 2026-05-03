@@ -18,8 +18,11 @@ class Cache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # TTL settings for time-sensitive data (hours)
-        self.news_ttl_hours = 12       # News expires after 12 hours
-        self.insider_ttl_hours = 24    # Insider trades expire after 24 hours
+        self.news_ttl_hours = 12           # News expires after 12 hours (new news every day)
+        self.insider_ttl_hours = 24        # Insider trades expire after 24 hours
+        self.prices_ttl_hours = 24         # Price data updates daily after market close
+        self.financials_ttl_days = 7       # Financial metrics update quarterly, check weekly
+        self.market_cap_ttl_hours = 24     # Market cap changes daily
         
         # In-memory cache for fast lookups
         self._prices_cache: dict[str, list[dict[str, any]]] = {}
@@ -146,7 +149,11 @@ class Cache:
         return cached
     
     def has_sufficient_prices(self, ticker: str, start_date: str, end_date: str) -> bool:
-        """Check if we have enough cached price data for the date range."""
+        """Check if we have enough cached price data AND cache is fresh."""
+        # Check if cache is fresh enough (24 hours)
+        if not self._is_cache_fresh(ticker, "prices", self.prices_ttl_hours):
+            return False
+        
         cached = self._prices_cache.get(ticker.upper())
         return self._has_sufficient_data(cached, start_date, end_date, "time")
 
@@ -162,7 +169,11 @@ class Cache:
         return self._financial_metrics_cache.get(ticker.upper())
     
     def has_sufficient_financial_metrics(self, ticker: str) -> bool:
-        """Check if we have cached financial metrics."""
+        """Check if we have cached financial metrics AND cache is fresh."""
+        # Check if cache is fresh enough (7 days)
+        if not self._is_cache_fresh(ticker, "financial_metrics", self.financials_ttl_days * 24):
+            return False
+        
         cached = self._financial_metrics_cache.get(ticker.upper())
         return cached is not None and len(cached) > 0
 
@@ -178,7 +189,11 @@ class Cache:
         return self._line_items_cache.get(ticker.upper())
     
     def has_sufficient_line_items(self, ticker: str) -> bool:
-        """Check if we have cached line items."""
+        """Check if we have cached line items AND cache is fresh."""
+        # Check if cache is fresh enough (7 days)
+        if not self._is_cache_fresh(ticker, "line_items", self.financials_ttl_days * 24):
+            return False
+        
         cached = self._line_items_cache.get(ticker.upper())
         return cached is not None and len(cached) > 0
 
@@ -262,8 +277,11 @@ class Cache:
         self._save_to_disk("company_news", ticker_upper, merged)
 
     def get_market_cap(self, ticker: str) -> float | None:
-        """Get cached market cap value (persisted permanently)."""
+        """Get cached market cap value - returns None if cache is stale (over 24 hours)."""
         ticker_upper = ticker.upper()
+        # Check if cache is fresh enough (24 hours)
+        if not self._is_cache_fresh(ticker, "market_cap", self.market_cap_ttl_hours):
+            return None
         return self._market_cap_cache.get(ticker_upper)
 
     def set_market_cap(self, ticker: str, value: float):

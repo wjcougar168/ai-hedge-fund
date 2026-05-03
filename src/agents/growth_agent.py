@@ -36,7 +36,7 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
             limit=12, # 3 years of ttm data
             api_key=api_key,
         )
-        if not financial_metrics:
+        if not financial_metrics or len(financial_metrics) < 4:
             progress.update_status(agent_id, ticker, "No real data available")
             growth_analysis[ticker] = {
                 "signal": "NEUTRAL",

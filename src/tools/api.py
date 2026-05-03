@@ -248,12 +248,10 @@ def get_financial_metrics(
     api_key: str = None,
 ) -> list[FinancialMetrics]:
     """Fetch financial metrics from cache or API with multiple sources."""
-    # Don't include end_date in cache key - financial metrics are immutable
-    # and we store permanently, so cache lookup works across different date ranges
-    cache_key = f"{ticker}_{period}_{limit}"
+    # Financial metrics are immutable - store permanently by ticker
     
     # Check cache first - simple exact match
-    if cached_data := _cache.get_financial_metrics(cache_key):
+    if cached_data := _cache.get_financial_metrics(ticker):
         return [FinancialMetrics(**metric) for metric in cached_data]
 
     # If not in cache, fetch from API
@@ -362,7 +360,7 @@ def get_financial_metrics(
                         financial_metrics.append(metrics)
 
                     if len(financial_metrics) >= 1:
-                        _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
+                        _cache.set_financial_metrics(ticker, [m.model_dump() for m in financial_metrics])
                         logger.info(f"Successfully retrieved {len(financial_metrics)} historical financial metrics for {ticker} via Alpha Vantage")
                         return financial_metrics
 

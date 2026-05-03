@@ -117,9 +117,9 @@ def select_model(use_ollama: bool, model_flag: str | None = None) -> tuple[str, 
         else:
             print(f"{Fore.RED}Model '{model_flag}' not found. Please select a model.{Style.RESET_ALL}")
 
-    # Default to ark-code-latest when no model flag specified and not using Ollama
+    # Default to glm-5.1 when no model flag specified and not using Ollama
     if not use_ollama and not model_flag:
-        model = find_model_by_name("ark-code-latest")
+        model = find_model_by_name("glm-5.1")
         if model:
             print(
                 f"\nUsing default model: {Fore.CYAN}{model.provider.value}{Style.RESET_ALL} - {Fore.GREEN + Style.BRIGHT}{model.model_name}{Style.RESET_ALL}\n"

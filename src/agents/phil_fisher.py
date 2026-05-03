@@ -12,7 +12,7 @@ import json
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
-import statistics
+import math
 from src.utils.api_key import get_api_key_from_state
 
 class PhilFisherSignal(BaseModel):
@@ -277,7 +277,7 @@ def analyze_margins_stability(financial_line_items: list) -> dict:
 
     # 1. Operating Margin Consistency
     op_margins = [getattr(fi, 'operating_margin', None) for fi in financial_line_items]
-    op_margins = [v for v in op_margins if v is not None and v != 0]
+    op_margins = [float(v) for v in op_margins if v is not None and v != 0]
     if len(op_margins) >= 2:
         # Check if margins are stable or improving (comparing oldest to newest)
         oldest_op_margin = op_margins[-1]
@@ -295,7 +295,7 @@ def analyze_margins_stability(financial_line_items: list) -> dict:
 
     # 2. Gross Margin Level
     gm_values = [getattr(fi, 'gross_margin', None) for fi in financial_line_items]
-    gm_values = [v for v in gm_values if v is not None and v != 0]
+    gm_values = [float(v) for v in gm_values if v is not None and v != 0]
     if gm_values:
         # We'll just take the most recent
         recent_gm = gm_values[0]
@@ -313,7 +313,8 @@ def analyze_margins_stability(financial_line_items: list) -> dict:
     # 3. Multi-year Margin Stability
     #   e.g. if we have at least 3 data points, see if standard deviation is low.
     if len(op_margins) >= 3:
-        stdev = statistics.pstdev(op_margins)
+        mean_om = sum(op_margins) / len(op_margins)
+        stdev = math.sqrt(sum((x - mean_om) ** 2 for x in op_margins) / len(op_margins))
         if stdev < 0.02:
             raw_score += 2
             details.append("Operating margin extremely stable over multiple years")

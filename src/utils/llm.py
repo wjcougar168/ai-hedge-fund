@@ -46,13 +46,13 @@ def call_llm(
             else:
                 # Use system defaults when no state or agent_name is provided
                 # Default to Volcengine Ark model (same as Hermes)
-                model_name = "ark-code-latest"
+                model_name = "glm-5.1"
                 model_provider = "OpenAI"
             
             # For Volcengine Ark, override model name to always use a valid Ark model
             # regardless of what was passed from frontend (gpt-4.1, etc.)
             if is_ark_endpoint():
-                model_name = "ark-code-latest"
+                model_name = "glm-5.1"
                 model_provider = "OpenAI"
             
             # Normalize model provider string to match enum

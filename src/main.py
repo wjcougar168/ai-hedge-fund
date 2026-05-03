@@ -1014,7 +1014,7 @@ def run_hedge_fund(
     portfolio: dict,
     show_reasoning: bool = False,
     selected_analysts: list[str] = [],
-    model_name: str = "ark-code-latest",
+    model_name: str = "glm-5.1",
     model_provider: str = "OpenAI",
     language: str = "en",
 ):

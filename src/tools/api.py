@@ -1021,6 +1021,19 @@ def search_line_items(
                 'cost_of_revenue': ['Cost Of Revenue', 'Total Expenses'],
                 'research_and_development': ['Research And Development', 'Research Development', 'R&D'],
                 'operating_expense': ['Operating Expense', 'Total Operating Expenses', 'Selling General Administrative'],
+                # Fields needed by Charlie Munger and other agents
+                'cash_and_equivalents': ['Cash And Cash Equivalents', 'Cash Cash Equivalents And Short Term Investments', 'Cash Equivalents'],
+                'total_debt': ['Total Debt', 'Long Term Debt And Capital Lease Obligation'],
+                'goodwill_and_intangible_assets': ['Goodwill And Other Intangible Assets', 'Goodwill'],
+                # Fields needed by valuation, druckenmiller, fisher, damodaran, etc.
+                'ebit': ['EBIT'],
+                'ebitda': ['EBITDA', 'Normalized EBITDA'],
+                'interest_expense': ['Interest Expense', 'Interest Expense Non Operating'],
+                # Fields needed by graham, pabrai, lynch, rakesh, valuation, etc.
+                'current_assets': ['Current Assets'],
+                'current_liabilities': ['Current Liabilities'],
+                'earnings_per_share': ['Basic EPS', 'Diluted EPS'],
+                'working_capital': ['Working Capital'],
             }
             
             # We need at least 3 periods for reliable valuation
@@ -1039,28 +1052,116 @@ def search_line_items(
                 }
                 has_any_field = False
                 
+                # Helper to look up a yfinance field value for this period
+                # Returns (found: bool, value: float | None) to distinguish 0 from missing
+                def _lookup_yf_field(yf_field_name):
+                    """Look up a single yfinance field across all 3 financial statements.
+                    Returns (True, value) if found (including 0), (False, None) if not found.
+                    """
+                    for df_candidate in [income_stmt, balance_sheet, cash_flow]:
+                        if df_candidate is not None and yf_field_name in df_candidate.index and report_date in df_candidate.columns:
+                            try:
+                                val = float(df_candidate.loc[yf_field_name, report_date])
+                                return True, val
+                            except (KeyError, ValueError, TypeError):
+                                continue
+                    return False, None
+                
                 for requested_field in line_items:
                     if requested_field in field_mapping:
-                        value = None
+                        found, value = False, None
                         for yf_field in field_mapping[requested_field]:
-                            df = None
-                            if yf_field in income_stmt.index:
-                                df = income_stmt
-                            elif balance_sheet is not None and yf_field in balance_sheet.index:
-                                df = balance_sheet
-                            elif cash_flow is not None and yf_field in cash_flow.index:
-                                df = cash_flow
-                            
-                            if df is not None and report_date in df.columns:
-                                try:
-                                    value = float(df.loc[yf_field, report_date])
-                                    break
-                                except (KeyError, ValueError, TypeError):
-                                    continue
+                            found, value = _lookup_yf_field(yf_field)
+                            if found:
+                                break
                         
-                        if value is not None:
+                        if found:
                             item_data[requested_field] = value
                             has_any_field = True
+                
+                # Calculate ratio fields from raw yfinance data when requested
+                # These are not direct line items in yfinance but can be computed from raw values.
+                # Use _lookup_yf_field which returns (found, value) to handle 0 correctly
+                # (Python's `or` treats 0 as falsy, which would skip legitimate zero values).
+                if 'gross_margin' in line_items and 'gross_margin' not in item_data:
+                    gp_found, gross_profit = item_data.get('gross_profit') is not None, item_data.get('gross_profit')
+                    if not gp_found:
+                        gp_found, gross_profit = _lookup_yf_field('Gross Profit')
+                    rev_found, revenue = item_data.get('revenue') is not None, item_data.get('revenue')
+                    if not rev_found:
+                        rev_found, revenue = _lookup_yf_field('Total Revenue')
+                    if not rev_found:
+                        rev_found, revenue = _lookup_yf_field('Revenue')
+                    if gp_found and rev_found and revenue and revenue != 0:
+                        item_data['gross_margin'] = gross_profit / revenue
+                        has_any_field = True
+                
+                if 'operating_margin' in line_items and 'operating_margin' not in item_data:
+                    oi_found, operating_income = _lookup_yf_field('Operating Income')
+                    if not oi_found:
+                        oi_found, operating_income = _lookup_yf_field('Operating Revenue')
+                    rev_found, revenue = item_data.get('revenue') is not None, item_data.get('revenue')
+                    if not rev_found:
+                        rev_found, revenue = _lookup_yf_field('Total Revenue')
+                    if not rev_found:
+                        rev_found, revenue = _lookup_yf_field('Revenue')
+                    if oi_found and rev_found and revenue and revenue != 0:
+                        item_data['operating_margin'] = operating_income / revenue
+                        has_any_field = True
+                
+                if 'debt_to_equity' in line_items and 'debt_to_equity' not in item_data:
+                    tl_found, total_liabilities = item_data.get('total_liabilities') is not None, item_data.get('total_liabilities')
+                    if not tl_found:
+                        tl_found, total_liabilities = _lookup_yf_field('Total Liabilities Net Minority Interest')
+                    if not tl_found:
+                        tl_found, total_liabilities = _lookup_yf_field('Total Liabilities')
+                    se_found, shareholders_equity = _lookup_yf_field('Stockholders Equity')
+                    if not se_found:
+                        se_found, shareholders_equity = _lookup_yf_field('Total Equity Gross Minority Interest')
+                    if tl_found and se_found and shareholders_equity and shareholders_equity != 0:
+                        item_data['debt_to_equity'] = total_liabilities / shareholders_equity
+                        has_any_field = True
+                
+                # ROIC = Operating Income / Invested Capital
+                # Invested Capital can be computed as: Stockholders Equity + Total Debt - Cash
+                # Or yfinance may provide "Invested Capital" directly
+                if 'return_on_invested_capital' in line_items and 'return_on_invested_capital' not in item_data:
+                    oi_found, operating_income = _lookup_yf_field('Operating Income')
+                    if not oi_found:
+                        oi_found, operating_income = _lookup_yf_field('Operating Revenue')
+                    # Try direct "Invested Capital" field first
+                    ic_found, invested_capital = _lookup_yf_field('Invested Capital')
+                    if not ic_found:
+                        # Compute: Invested Capital = Equity + Total Debt - Cash
+                        eq_found, equity = _lookup_yf_field('Stockholders Equity')
+                        if not eq_found:
+                            eq_found, equity = _lookup_yf_field('Total Equity Gross Minority Interest')
+                        td_found, total_debt = _lookup_yf_field('Total Debt')
+                        if not td_found:
+                            td_found, total_debt = _lookup_yf_field('Long Term Debt And Capital Lease Obligation')
+                        ca_found, cash = _lookup_yf_field('Cash And Cash Equivalents')
+                        if not ca_found:
+                            ca_found, cash = _lookup_yf_field('Cash Cash Equivalents And Short Term Investments')
+                        if eq_found and td_found and ca_found:
+                            invested_capital = equity + total_debt - cash
+                            ic_found = True
+                    if oi_found and ic_found and invested_capital and invested_capital != 0:
+                        item_data['return_on_invested_capital'] = operating_income / invested_capital
+                        has_any_field = True
+                
+                # book_value_per_share = shareholders_equity / outstanding_shares
+                if 'book_value_per_share' in line_items and 'book_value_per_share' not in item_data:
+                    se_found, equity = _lookup_yf_field('Stockholders Equity')
+                    if not se_found:
+                        se_found, equity = _lookup_yf_field('Total Equity Gross Minority Interest')
+                    os_found, shares = item_data.get('outstanding_shares') is not None, item_data.get('outstanding_shares')
+                    if not os_found:
+                        os_found, shares = _lookup_yf_field('Share Issued')
+                    if not os_found:
+                        os_found, shares = _lookup_yf_field('Ordinary Shares Number')
+                    if se_found and os_found and shares and shares != 0:
+                        item_data['book_value_per_share'] = equity / shares
+                        has_any_field = True
                 
                 if has_any_field:
                     result_items.append(LineItem(**item_data))
@@ -1081,6 +1182,207 @@ def search_line_items(
                 return result_items
         except Exception as e:
             logger.info(f"yfinance line items fallback failed for {ticker}: {e}")
+        
+        # Alpha Vantage fallback for line items
+        alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+        if alpha_vantage_key:
+            try:
+                import requests as _requests
+                from datetime import datetime as _dt
+                
+                # Alpha Vantage field mapping: requested field -> (API function, response key)
+                # We'll fetch income statement, balance sheet, and cash flow separately
+                av_income_fields = {
+                    'revenue': 'totalRevenue',
+                    'gross_profit': 'grossProfit',
+                    'operating_income': 'operatingIncome',
+                    'net_income': 'netIncome',
+                    'research_and_development': 'researchAndDevelopment',
+                    'operating_expense': 'operatingExpenses',
+                    'interest_expense': 'interestExpense',
+                    'depreciation_and_amortization': 'depreciationAndAmortization',
+                    'ebit': 'ebitda',  # AV doesn't have EBIT directly, approximate from EBITDA
+                    'ebitda': 'ebitda',
+                    'earnings_per_share': 'reportedEPS',
+                    'cost_of_revenue': 'costofGoodsAndServicesSold',
+                }
+                av_balance_fields = {
+                    'total_assets': 'totalAssets',
+                    'total_liabilities': 'totalLiabilities',
+                    'shareholders_equity': 'totalShareholderEquity',
+                    'cash_and_equivalents': 'cashAndShortTermInvestments',
+                    'total_debt': 'shortLongTermDebtTotal',
+                    'goodwill_and_intangible_assets': 'goodwillAndIntangibleAssetsTotal',
+                    'current_assets': 'totalCurrentAssets',
+                    'current_liabilities': 'totalCurrentLiabilities',
+                    'inventory': 'inventory',
+                    'outstanding_shares': 'commonStockSharesOutstanding',
+                }
+                av_cash_fields = {
+                    'capital_expenditure': 'capitalExpenditures',
+                    'free_cash_flow': 'operatingCashflow',  # Will compute FCF properly below
+                    'operating_cash_flow': 'operatingCashflow',
+                    'dividends_and_other_cash_distributions': 'dividendPayout',
+                    'issuance_or_purchase_of_equity_shares': 'issuanceOfStock',
+                }
+                
+                # Helper to safely parse float from AV data
+                def _av_safe_float(data_dict, key, default=None):
+                    val = data_dict.get(key)
+                    if val is None or val == "None" or val == "":
+                        return default
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return default
+                
+                # Fetch all 3 statements
+                freq = "quarterly" if period == "quarterly" else "annual"
+                reports_by_period = {}  # date_str -> dict of all fields
+                
+                # Income Statement
+                is_url = f"https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol={ticker}&apikey={alpha_vantage_key}"
+                is_resp = _requests.get(is_url, timeout=15)
+                if is_resp.status_code == 200:
+                    is_data = is_resp.json()
+                    reports_key = "quarterlyReports" if freq == "quarterly" else "annualReports"
+                    if reports_key in is_data:
+                        for report in is_data[reports_key][:limit]:
+                            date_str = report.get("fiscalDateEnding", "")
+                            if not date_str:
+                                continue
+                            if date_str not in reports_by_period:
+                                reports_by_period[date_str] = {}
+                            for req_field, av_key in av_income_fields.items():
+                                if req_field in line_items:
+                                    val = _av_safe_float(report, av_key)
+                                    if val is not None:
+                                        reports_by_period[date_str][req_field] = val
+                            # Also store ebitda for FCF calculation
+                            ebitda_val = _av_safe_float(report, 'ebitda')
+                            if ebitda_val is not None:
+                                reports_by_period[date_str]['_ebitda'] = ebitda_val
+                
+                # Balance Sheet
+                bs_url = f"https://www.alphavantage.co/query?function=BALANCE_SHEET&symbol={ticker}&apikey={alpha_vantage_key}"
+                bs_resp = _requests.get(bs_url, timeout=15)
+                if bs_resp.status_code == 200:
+                    bs_data = bs_resp.json()
+                    reports_key = "quarterlyReports" if freq == "quarterly" else "annualReports"
+                    if reports_key in bs_data:
+                        for report in bs_data[reports_key][:limit]:
+                            date_str = report.get("fiscalDateEnding", "")
+                            if not date_str:
+                                continue
+                            if date_str not in reports_by_period:
+                                reports_by_period[date_str] = {}
+                            for req_field, av_key in av_balance_fields.items():
+                                if req_field in line_items:
+                                    val = _av_safe_float(report, av_key)
+                                    if val is not None:
+                                        reports_by_period[date_str][req_field] = val
+                
+                # Cash Flow
+                cf_url = f"https://www.alphavantage.co/query?function=CASH_FLOW&symbol={ticker}&apikey={alpha_vantage_key}"
+                cf_resp = _requests.get(cf_url, timeout=15)
+                if cf_resp.status_code == 200:
+                    cf_data = cf_resp.json()
+                    reports_key = "quarterlyReports" if freq == "quarterly" else "annualReports"
+                    if reports_key in cf_data:
+                        for report in cf_data[reports_key][:limit]:
+                            date_str = report.get("fiscalDateEnding", "")
+                            if not date_str:
+                                continue
+                            if date_str not in reports_by_period:
+                                reports_by_period[date_str] = {}
+                            for req_field, av_key in av_cash_fields.items():
+                                if req_field in line_items:
+                                    val = _av_safe_float(report, av_key)
+                                    if val is not None:
+                                        reports_by_period[date_str][req_field] = val
+                            # Store capex for FCF calculation
+                            capex = _av_safe_float(report, 'capitalExpenditures')
+                            if capex is not None:
+                                reports_by_period[date_str]['_capex'] = capex
+                
+                # Build LineItem objects from collected data
+                av_items = []
+                for date_str in sorted(reports_by_period.keys(), reverse=True):
+                    fields = reports_by_period[date_str]
+                    if not fields:
+                        continue
+                    
+                    # Calculate FCF = Operating Cash Flow - Capex
+                    if 'free_cash_flow' in line_items and 'free_cash_flow' not in fields:
+                        ocf = fields.get('operating_cash_flow')
+                        capex = fields.get('_capex')
+                        if ocf is not None and capex is not None:
+                            fields['free_cash_flow'] = ocf - abs(capex)
+                    
+                    # Calculate gross_margin
+                    if 'gross_margin' in line_items and 'gross_margin' not in fields:
+                        gp = fields.get('gross_profit')
+                        rev = fields.get('revenue')
+                        if gp is not None and rev is not None and rev != 0:
+                            fields['gross_margin'] = gp / rev
+                    
+                    # Calculate operating_margin
+                    if 'operating_margin' in line_items and 'operating_margin' not in fields:
+                        oi = fields.get('operating_income')
+                        rev = fields.get('revenue')
+                        if oi is not None and rev is not None and rev != 0:
+                            fields['operating_margin'] = oi / rev
+                    
+                    # Calculate debt_to_equity
+                    if 'debt_to_equity' in line_items and 'debt_to_equity' not in fields:
+                        td = fields.get('total_debt')
+                        se = fields.get('shareholders_equity')
+                        if td is not None and se is not None and se != 0:
+                            fields['debt_to_equity'] = td / se
+                    
+                    # Calculate return_on_invested_capital
+                    if 'return_on_invested_capital' in line_items and 'return_on_invested_capital' not in fields:
+                        oi = fields.get('operating_income')
+                        se = fields.get('shareholders_equity')
+                        td = fields.get('total_debt')
+                        cash = fields.get('cash_and_equivalents')
+                        if oi is not None and se is not None and td is not None and cash is not None:
+                            invested = se + td - cash
+                            if invested != 0:
+                                fields['return_on_invested_capital'] = oi / invested
+                    
+                    # Calculate book_value_per_share
+                    if 'book_value_per_share' in line_items and 'book_value_per_share' not in fields:
+                        se = fields.get('shareholders_equity')
+                        shares = fields.get('outstanding_shares')
+                        if se is not None and shares is not None and shares != 0:
+                            fields['book_value_per_share'] = se / shares
+                    
+                    # Calculate working_capital from current_assets - current_liabilities
+                    if 'working_capital' in line_items and 'working_capital' not in fields:
+                        ca = fields.get('current_assets')
+                        cl = fields.get('current_liabilities')
+                        if ca is not None and cl is not None:
+                            fields['working_capital'] = ca - cl
+                    
+                    # Remove internal helper keys
+                    item_data = {k: v for k, v in fields.items() if not k.startswith('_')}
+                    
+                    if item_data:
+                        item_data['ticker'] = ticker
+                        item_data['report_period'] = date_str
+                        item_data['period'] = period
+                        item_data['currency'] = 'USD'
+                        av_items.append(LineItem(**item_data))
+                
+                if av_items:
+                    logger.info(f"Retrieved {len(av_items)} line items for {ticker} via Alpha Vantage")
+                    # Cache the results to avoid wasting AV API quota
+                    _cache.set_line_items(ticker, [item.model_dump() for item in av_items])
+                    return av_items
+                    
+            except Exception as e:
+                logger.info(f"Alpha Vantage line items fallback failed for {ticker}: {e}")
         
         return []
 

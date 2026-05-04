@@ -373,8 +373,11 @@ def _supplement_with_finnhub(ticker: str, metric_obj: FinancialMetrics):
         if m.enterprise_value_to_ebitda_ratio is None:
             val = fh.get("evEbitdaTTM")
             if val is not None:
-                m.enterprise_value_to_ebitda_ratio = float(val)
-                supplemented.append("EV/EBITDA")
+                ev_ebitda = float(val)
+                # Negative EV/EBITDA is almost always a data error
+                if ev_ebitda > 0:
+                    m.enterprise_value_to_ebitda_ratio = ev_ebitda
+                    supplemented.append("EV/EBITDA")
         
         if m.market_cap is None:
             val = fh.get("marketCapitalization")
@@ -580,6 +583,19 @@ def get_financial_metrics(
                 gross_margin = gross_profit / revenue if (revenue > 0 and gross_profit > 0) else None
                 operating_margin = operating_income / revenue if (revenue > 0 and operating_income > 0) else None
                 net_margin = net_income / revenue if revenue > 0 else 0
+                
+                # Fallback: if gross_margin is None from statement data, try yfinance info
+                # (e.g., BRK has grossMargins=0.2778 in info but no Gross Profit in income_stmt)
+                if gross_margin is None and info:
+                    info_gm = safe_float(info, "grossMargins")
+                    if info_gm is not None and info_gm > 0:
+                        gross_margin = info_gm
+                
+                # Fallback: if operating_margin is None from statement data, try yfinance info
+                if operating_margin is None and info:
+                    info_om = safe_float(info, "operatingMargins")
+                    if info_om is not None and info_om > 0:
+                        operating_margin = info_om
 
                 # Get growth: first try yfinance info for TTM growth rate
                 # Fallback to sequential quarter-over-quarter calculation
@@ -682,7 +698,7 @@ def get_financial_metrics(
                     price_to_book_ratio=info_pb,
                     price_to_sales_ratio=safe_float(info, "priceToSalesTrailing12Months") if info else None,
                     enterprise_value_to_revenue_ratio=safe_float(info, "enterpriseToRevenue") if info else None,
-                    enterprise_value_to_ebitda_ratio=safe_float(info, "enterpriseToEbitda") if info else None,
+                    enterprise_value_to_ebitda_ratio=(lambda v: v if v and v > 0 else None)(safe_float(info, "enterpriseToEbitda")) if info else None,
                     free_cash_flow_yield=None,
                     peg_ratio=safe_float(info, "pegRatio") if info else None,
                     gross_margin=gross_margin,
@@ -1014,10 +1030,10 @@ def search_line_items(
                 'free_cash_flow': ['Free Cash Flow'],
                 'capital_expenditure': ['Capital Expenditure', 'CapitalExpenditures'],
                 'depreciation_and_amortization': ['Depreciation And Amortization', 'Depreciation'],
-                'outstanding_shares': ['Common Stock', 'Share Issued', 'Ordinary Shares Number'],
+                'outstanding_shares': ['Share Issued', 'Ordinary Shares Number'],  # NOTE: 'Common Stock' is par value, NOT share count
                 'dividends_and_other_cash_distributions': ['Cash Dividends Paid', 'Dividends Paid', 'Common Stock Dividend Paid'],
                 'issuance_or_purchase_of_equity_shares': ['Issuance Of Stock', 'Repurchase Of Stock', 'Net Issuance Of Stock', 'Sale And Purchase Of Stock'],
-                'operating_income': ['Operating Income', 'Operating Revenue'],
+                'operating_income': ['Operating Income'],  # NOTE: 'Operating Revenue' is NOT operating income - it's a synonym for Total Revenue
                 'cost_of_revenue': ['Cost Of Revenue', 'Total Expenses'],
                 'research_and_development': ['Research And Development', 'Research Development', 'R&D'],
                 'operating_expense': ['Operating Expense', 'Total Operating Expenses', 'Selling General Administrative'],
@@ -1057,11 +1073,15 @@ def search_line_items(
                 def _lookup_yf_field(yf_field_name):
                     """Look up a single yfinance field across all 3 financial statements.
                     Returns (True, value) if found (including 0), (False, None) if not found.
+                    Filters out NaN values which yfinance returns for missing data.
                     """
                     for df_candidate in [income_stmt, balance_sheet, cash_flow]:
                         if df_candidate is not None and yf_field_name in df_candidate.index and report_date in df_candidate.columns:
                             try:
                                 val = float(df_candidate.loc[yf_field_name, report_date])
+                                # Filter out NaN - yfinance returns NaN for missing data
+                                if val != val:  # NaN != NaN is True
+                                    continue
                                 return True, val
                             except (KeyError, ValueError, TypeError):
                                 continue
@@ -1098,8 +1118,7 @@ def search_line_items(
                 
                 if 'operating_margin' in line_items and 'operating_margin' not in item_data:
                     oi_found, operating_income = _lookup_yf_field('Operating Income')
-                    if not oi_found:
-                        oi_found, operating_income = _lookup_yf_field('Operating Revenue')
+                    # Do NOT fall back to 'Operating Revenue' - it equals Total Revenue, not Operating Income
                     rev_found, revenue = item_data.get('revenue') is not None, item_data.get('revenue')
                     if not rev_found:
                         rev_found, revenue = _lookup_yf_field('Total Revenue')
@@ -1127,8 +1146,7 @@ def search_line_items(
                 # Or yfinance may provide "Invested Capital" directly
                 if 'return_on_invested_capital' in line_items and 'return_on_invested_capital' not in item_data:
                     oi_found, operating_income = _lookup_yf_field('Operating Income')
-                    if not oi_found:
-                        oi_found, operating_income = _lookup_yf_field('Operating Revenue')
+                    # Do NOT fall back to 'Operating Revenue' - it equals Total Revenue, not Operating Income
                     # Try direct "Invested Capital" field first
                     ic_found, invested_capital = _lookup_yf_field('Invested Capital')
                     if not ic_found:
@@ -1167,15 +1185,52 @@ def search_line_items(
                     result_items.append(LineItem(**item_data))
             
             # Also try to get shares outstanding from info (only for latest period)
+            # This is the most reliable source for actual share count
+            info_shares_outstanding = None
             try:
                 info = ticker_obj.info
-                if 'outstanding_shares' in line_items and info:
-                    shares = info.get('sharesOutstanding')
-                    if shares and len(result_items) > 0:
-                        # Add outstanding_shares to the latest period's item
-                        result_items[0].outstanding_shares = float(shares)
+                if info:
+                    info_shares_outstanding = info.get('sharesOutstanding')
+                    if info_shares_outstanding:
+                        info_shares_outstanding = float(info_shares_outstanding)
             except:
                 pass
+            
+            # Fix outstanding_shares for all periods:
+            # 1. yfinance 'Share Issued' / 'Ordinary Shares Number' may be in thousands
+            #    for some stocks (e.g., BRK-B: 1,438,223 vs actual 1,438,223,000)
+            # 2. Use info.sharesOutstanding as reference to detect and correct unit
+            if 'outstanding_shares' in line_items and result_items:
+                if info_shares_outstanding and info_shares_outstanding > 0:
+                    # Use info.sharesOutstanding for the latest period
+                    result_items[0].outstanding_shares = info_shares_outstanding
+                    
+                    # For historical periods, check if shares are in thousands
+                    # by comparing latest period's raw value with info.sharesOutstanding
+                    if len(result_items) > 1:
+                        for item in result_items[1:]:
+                            raw_shares = getattr(item, 'outstanding_shares', None)
+                            if raw_shares and raw_shares > 0:
+                                # If raw shares is < 1% of info shares, it's likely in thousands
+                                if info_shares_outstanding / raw_shares > 100:
+                                    item.outstanding_shares = raw_shares * 1000
+                elif result_items and len(result_items) > 0:
+                    # No info shares available - use raw value but warn if suspiciously small
+                    # (most public companies have > 1M shares outstanding)
+                    pass
+            
+            # Filter out NaN values from LineItem fields
+            # yfinance sometimes returns NaN for missing data points
+            import math
+            for item in result_items:
+                for attr in list(item.__dict__.keys()) if hasattr(item, '__dict__') else []:
+                    val = getattr(item, attr, None)
+                    if isinstance(val, float) and math.isnan(val):
+                        # Remove the NaN field entirely (set to None for pydantic extra fields)
+                        try:
+                            delattr(item, attr)
+                        except (AttributeError, TypeError):
+                            pass
             
             if result_items:
                 logger.info(f"Retrieved {len(result_items)} line items ({len(set(li.report_period for li in result_items))} periods) for {ticker} via yfinance")

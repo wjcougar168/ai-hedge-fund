@@ -975,6 +975,25 @@ def search_line_items(
     # Normalize ticker for yfinance compatibility
     yf_ticker_name = _normalize_ticker_for_yfinance(ticker)
     
+    # Check cache FIRST - avoid redundant API calls and rate limits
+    # But only return cache if it contains ALL requested fields (different agents
+    # request different fields, so partial cache from a previous agent is insufficient)
+    if _cache.has_sufficient_line_items(ticker):
+        cached_data = _cache.get_line_items(ticker)
+        if cached_data:
+            # Check if cached data has all requested fields (at least in one record)
+            # Core fields like ticker, report_period, period, currency are always present
+            data_fields = set()
+            for item in cached_data:
+                data_fields.update(item.keys())
+            # Check if ALL requested line_item fields exist in the cached data
+            missing_fields = [f for f in line_items if f not in data_fields]
+            if not missing_fields:
+                logger.info(f"Using {len(cached_data)} cached line items for {ticker} (all {len(line_items)} fields present)")
+                return [LineItem(**item) for item in cached_data[:limit]]
+            else:
+                logger.info(f"Cache hit for {ticker} but missing {len(missing_fields)} fields: {missing_fields[:5]}... fetching from API")
+    
     # If not in cache or insufficient data, fetch from API
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
@@ -1012,7 +1031,9 @@ def search_line_items(
                 elif balance_sheet is not None and not balance_sheet.empty:
                     income_stmt = balance_sheet  # Use balance_sheet as column source
                 else:
-                    return []
+                    # yfinance returned empty data (rate-limited or unsupported ticker)
+                    # Don't return [] here - fall through to Alpha Vantage fallback
+                    raise ValueError("yfinance returned empty financial statements")
             
             # Build line items from yfinance data
             # IMPORTANT: Group all fields into ONE LineItem per period
@@ -1234,6 +1255,8 @@ def search_line_items(
             
             if result_items:
                 logger.info(f"Retrieved {len(result_items)} line items ({len(set(li.report_period for li in result_items))} periods) for {ticker} via yfinance")
+                # Cache yfinance results to avoid redundant API calls
+                _cache.set_line_items(ticker, [item.model_dump() for item in result_items])
                 return result_items
         except Exception as e:
             logger.info(f"yfinance line items fallback failed for {ticker}: {e}")
@@ -1451,7 +1474,8 @@ def search_line_items(
     if not search_results:
         return []
 
-    # Cache the results
+    # Cache the results to avoid redundant API calls
+    _cache.set_line_items(ticker, [item.model_dump() for item in search_results[:limit]])
     return search_results[:limit]
 
 

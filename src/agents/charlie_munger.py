@@ -840,7 +840,8 @@ def generate_munger_output(
          "You are Charlie Munger. Decide bullish, bearish, or neutral using only the facts.\n"
          "IMPORTANT DATA RULES:\n"
          "- Never invent metrics like 'negative ROE' or 'high debt' if data shows 'Insufficient data' or empty details.\n"
-         "- If facts show missing data, state '关键财务数据缺失' or 'lacking key metrics' honestly.\n"
+         "- If facts show missing data, distinguish between: (a) 'no data at all' vs (b) 'insufficient periods for threshold'.\n"
+         "- For (a), state '关键财务数据缺失'. For (b), state '数据期间不足' (insufficient history), NOT 'data missing'.\n"
          "- Use the provided confidence exactly; do not change it.\n"
          "Return JSON only. Keep reasoning under 120 characters."),
         ("human",

@@ -103,16 +103,37 @@ class Cache:
             print(f"Warning: Could not save cache to disk: {e}")
     
     def _merge_data(self, existing: list[dict] | None, new_data: list[dict], key_field: str) -> list[dict]:
-        """Merge existing and new data, avoiding duplicates based on a key field."""
+        """Merge existing and new data, combining fields for matching keys.
+        
+        When multiple agents request different line_item fields for the same
+        ticker and report_period, we need to MERGE fields into the same record
+        (not discard the second agent's data). For example:
+        - Agent 1 caches: {report_period: "2025-12-31", revenue: 5B, net_income: -1B}
+        - Agent 2 caches: {report_period: "2025-12-31", total_assets: 49B, current_assets: 7B}
+        - Merged result:  {report_period: "2025-12-31", revenue: 5B, net_income: -1B, total_assets: 49B, current_assets: 7B}
+        """
         if not existing:
             return new_data
 
-        # Create a set of existing keys for O(1) lookup
-        existing_keys = {item[key_field] for item in existing}
-
-        # Only add items that don't exist yet
+        # Build a lookup dict for existing items by key_field
+        existing_by_key = {item[key_field]: i for i, item in enumerate(existing)}
         merged = existing.copy()
-        merged.extend([item for item in new_data if item[key_field] not in existing_keys])
+
+        for new_item in new_data:
+            key_val = new_item[key_field]
+            if key_val in existing_by_key:
+                # MERGE: add new fields to existing record (don't overwrite existing non-None values)
+                idx = existing_by_key[key_val]
+                for field, value in new_item.items():
+                    if field == key_field:
+                        continue
+                    # Only add field if it doesn't exist in existing record OR existing is None
+                    if field not in merged[idx] or merged[idx][field] is None:
+                        merged[idx][field] = value
+            else:
+                # New record - add it
+                merged.append(new_item)
+
         return merged
     
     def _filter_by_date_range(self, data: list[dict], start_date: str, end_date: str, date_field: str) -> list[dict]:

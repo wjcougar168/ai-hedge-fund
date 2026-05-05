@@ -204,15 +204,16 @@ def analyze_fundamentals(metrics: list) -> dict[str, any]:
 
 def analyze_consistency(financial_line_items: list) -> dict[str, any]:
     """Analyze earnings consistency and growth."""
-    if len(financial_line_items) < 4:  # Need at least 4 periods for trend analysis
+    if len(financial_line_items) < 3:  # Need at least 3 periods for trend analysis
         return {"score": 0, "details": "Insufficient historical data"}
 
     score = 0
     reasoning = []
 
     # Check earnings growth trend
-    earnings_values = [getattr(item, 'net_income', None) for item in financial_line_items if getattr(item, 'net_income', None)]
-    if len(earnings_values) >= 4:
+    # Note: Use `is not None` to include zero/negative earnings (filtering out None only)
+    earnings_values = [getattr(item, 'net_income', None) for item in financial_line_items if getattr(item, 'net_income', None) is not None]
+    if len(earnings_values) >= 3:
         # Simple check: is each period's earnings bigger than the next?
         earnings_growth = all(earnings_values[i] > earnings_values[i + 1] for i in range(len(earnings_values) - 1))
 
@@ -525,6 +526,10 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
         return {"intrinsic_value": None, "details": earnings_data["details"]}
 
     owner_earnings = earnings_data["owner_earnings"]
+    
+    # Negative owner earnings makes DCF meaningless - return None
+    if owner_earnings <= 0:
+        return {"intrinsic_value": None, "details": earnings_data["details"] + ["Owner earnings are negative - DCF valuation not applicable"]}
     latest_financial_line_items = financial_line_items[0]
     shares_outstanding = getattr(latest_financial_line_items, 'outstanding_shares', None)
 
@@ -538,7 +543,7 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
     historical_earnings = []
     for item in financial_line_items[:5]:  # Last 5 years
         ni = getattr(item, 'net_income', None)
-        if ni:
+        if ni is not None:
             historical_earnings.append(ni)
 
     # Calculate historical growth rate
@@ -547,13 +552,20 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
         latest_earnings = historical_earnings[0]
         years = len(historical_earnings) - 1
 
-        if oldest_earnings > 0:
-            historical_growth = ((latest_earnings / oldest_earnings) ** (1 / years)) - 1
-            # Conservative adjustment - cap growth and apply haircut
-            historical_growth = max(-0.05, min(historical_growth, 0.15))  # Cap between -5% and 15%
-            conservative_growth = historical_growth * 0.7  # Apply 30% haircut for conservatism
+        if oldest_earnings > 0 and latest_earnings > 0:
+            ratio = latest_earnings / oldest_earnings
+            if ratio > 0:
+                historical_growth = (ratio ** (1 / years)) - 1
+                # Clamp to real value in case of floating point edge cases
+                if isinstance(historical_growth, complex):
+                    historical_growth = historical_growth.real
+                # Conservative adjustment - cap growth and apply haircut
+                historical_growth = max(-0.05, min(historical_growth, 0.15))  # Cap between -5% and 15%
+                conservative_growth = historical_growth * 0.7  # Apply 30% haircut for conservatism
+            else:
+                conservative_growth = 0.03  # Default 3% if ratio is non-positive
         else:
-            conservative_growth = 0.03  # Default 3% if negative base
+            conservative_growth = 0.03  # Default 3% if negative earnings
     else:
         conservative_growth = 0.03  # Default conservative growth
 
@@ -633,18 +645,29 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
 
 def analyze_book_value_growth(financial_line_items: list) -> dict[str, any]:
     """Analyze book value per share growth - a key Buffett metric."""
-    if len(financial_line_items) < 3:
+    if len(financial_line_items) < 2:
         return {"score": 0, "details": "Insufficient data for book value analysis"}
 
-    # Extract book values per share
-    book_values = []
+    # Extract book values - prefer per-share, but fall back to total equity
+    # if shares are not available for ANY period (stay consistent)
+    book_values_per_share = []
+    book_values_total = []
     for item in financial_line_items:
         se = getattr(item, 'shareholders_equity', None)
         os_ = getattr(item, 'outstanding_shares', None)
         if se and os_:
-            book_values.append(se / os_)
+            book_values_per_share.append(se / os_)
+        if se:
+            book_values_total.append(se)
 
-    if len(book_values) < 3:
+    # Use per-share if we have enough data, otherwise use total equity
+    if len(book_values_per_share) >= 2:
+        book_values = book_values_per_share
+        per_share = True
+    elif len(book_values_total) >= 2:
+        book_values = book_values_total
+        per_share = False
+    else:
         return {"score": 0, "details": "Insufficient book value data for growth analysis"}
 
     score = 0
@@ -715,6 +738,12 @@ def analyze_pricing_power(financial_line_items: list, metrics: list) -> dict[str
     gross_margins = []
     for item in financial_line_items:
         gm = getattr(item, 'gross_margin', None)
+        # If gross_margin not directly available, compute from gross_profit/revenue
+        if gm is None:
+            gp = getattr(item, 'gross_profit', None)
+            rev = getattr(item, 'revenue', None)
+            if gp is not None and rev is not None and rev != 0:
+                gm = gp / rev
         if gm is not None:
             gross_margins.append(gm)
 
@@ -770,6 +799,7 @@ def generate_buffett_output(
         "book_value": analysis_data.get("book_value_analysis", {}).get("details"),
         "management": analysis_data.get("management_analysis", {}).get("details"),
         "intrinsic_value": analysis_data.get("intrinsic_value_analysis", {}).get("intrinsic_value"),
+        "intrinsic_value_details": analysis_data.get("intrinsic_value_analysis", {}).get("details"),
         "market_cap": analysis_data.get("market_cap"),
         "margin_of_safety": analysis_data.get("margin_of_safety"),
     }
@@ -797,6 +827,7 @@ def generate_buffett_output(
                 "- If facts show 'Insufficient data', 'data not available', or missing fields, REDUCE confidence to 10-30%.\n"
                 "- NEVER invent metrics like 'ROE is negative' or 'high debt' if data is missing.\n"
                 "- Be honest: say '关键财务数据缺失' / 'lacking key financial metrics' instead of inventing negative facts.\n"
+                "- IMPORTANT: If intrinsic_value is null but intrinsic_value_details explains WHY (e.g. 'Owner earnings are negative'), this is NOT data missing — it means DCF is not applicable because the company loses money. State this clearly: '负盈利不适合DCF估值' / 'Negative owner earnings make DCF inapplicable'. Do NOT say 'data missing' in this case.\n"
                 "\n"
                 "Confidence scale:\n"
                 "- 90-100%: Exceptional business within my circle, trading at attractive price\n"
